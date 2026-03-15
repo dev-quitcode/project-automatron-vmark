@@ -2,10 +2,12 @@
 
 from orchestrator.graph.edges import (
     MAX_ESCALATIONS,
+    route_after_architect,
     route_after_plan_review,
     route_after_status_classifier,
     route_after_task_selector,
 )
+from orchestrator.graph.nodes.scaffold import _resolve_init_script
 
 
 def _make_state(**overrides):
@@ -23,6 +25,14 @@ def _make_state(**overrides):
 
 def test_route_plan_review_to_repo_prepare_on_initial_approval():
     assert route_after_plan_review(_make_state(container_id="")) == "repo_prepare"
+
+
+def test_route_after_architect_to_plan_review_when_human_gate_required():
+    assert route_after_architect(_make_state(requires_human=True)) == "plan_review"
+
+
+def test_route_after_architect_to_task_selector_for_autonomous_delta():
+    assert route_after_architect(_make_state(requires_human=False)) == "task_selector"
 
 
 def test_route_plan_review_to_architect_when_resuming_after_freeze():
@@ -76,4 +86,30 @@ def test_route_status_ambiguity_to_freeze_at_limit():
             _make_state(builder_status="AMBIGUITY", escalation_count=MAX_ESCALATIONS)
         )
         == "freeze"
+    )
+
+
+def test_resolve_init_script_prefers_nextjs_for_next_stack():
+    assert (
+        _resolve_init_script(
+            {
+                "stack": "nextjs-app-router-prisma-sqlite-tailwind",
+                "framework": "Next.js 14 (App Router)",
+                "package_manager": "npm",
+            }
+        )
+        == "init-nextjs.sh"
+    )
+
+
+def test_resolve_init_script_ignores_raw_command_and_uses_platform_script():
+    assert (
+        _resolve_init_script(
+            {
+                "stack": "nextjs-app-router-prisma-sqlite-tailwind",
+                "framework": "Next.js 14 (App Router)",
+                "init_script": "npx create-next-app@latest . && npx prisma init",
+            }
+        )
+        == "init-nextjs.sh"
     )

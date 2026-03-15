@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import litellm
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 
 from orchestrator.config import settings
+from orchestrator.observability import trace_event
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +37,8 @@ async def call_llm(
     messages: list[AnyMessage],
     model: str | None = None,
     temperature: float = 0.3,
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,
+    trace_context: dict[str, Any] | None = None,
 ) -> str:
     """Call LLM via litellm (non-streaming, returns full response).
 
@@ -52,6 +55,22 @@ async def call_llm(
     msg_dicts = _messages_to_dicts(messages)
 
     logger.info("LLM call: model=%s, messages=%d", model, len(msg_dicts))
+    if trace_context and trace_context.get("project_id"):
+        await trace_event(
+            trace_context["project_id"],
+            trace_context.get("actor", "llm"),
+            "llm.call.started",
+            {
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "messages": msg_dicts,
+                "message_count": len(msg_dicts),
+                "prompt_name": trace_context.get("prompt_name"),
+            },
+            session_id=trace_context.get("session_id"),
+            stage=trace_context.get("stage"),
+        )
 
     try:
         response = await litellm.acompletion(
@@ -71,11 +90,36 @@ async def call_llm(
                 usage.prompt_tokens,
                 usage.completion_tokens,
             )
+        if trace_context and trace_context.get("project_id"):
+            await trace_event(
+                trace_context["project_id"],
+                trace_context.get("actor", "llm"),
+                "llm.call.completed",
+                {
+                    "model": model,
+                    "response": content,
+                    "usage": {
+                        "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+                        "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+                    },
+                },
+                session_id=trace_context.get("session_id"),
+                stage=trace_context.get("stage"),
+            )
 
         return content
 
     except Exception as e:
         logger.error("LLM call failed (model=%s): %s", model, e)
+        if trace_context and trace_context.get("project_id"):
+            await trace_event(
+                trace_context["project_id"],
+                trace_context.get("actor", "llm"),
+                "llm.call.failed",
+                {"model": model, "error": str(e)},
+                session_id=trace_context.get("session_id"),
+                stage=trace_context.get("stage"),
+            )
         raise
 
 
@@ -84,6 +128,7 @@ async def call_llm_streaming(
     model: str | None = None,
     temperature: float = 0.3,
     max_tokens: int = 8192,
+    trace_context: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Call LLM via litellm with streaming (yields tokens).
 
@@ -100,6 +145,22 @@ async def call_llm_streaming(
     msg_dicts = _messages_to_dicts(messages)
 
     logger.info("LLM streaming call: model=%s, messages=%d", model, len(msg_dicts))
+    if trace_context and trace_context.get("project_id"):
+        await trace_event(
+            trace_context["project_id"],
+            trace_context.get("actor", "llm"),
+            "llm.stream.started",
+            {
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "messages": msg_dicts,
+                "message_count": len(msg_dicts),
+                "prompt_name": trace_context.get("prompt_name"),
+            },
+            session_id=trace_context.get("session_id"),
+            stage=trace_context.get("stage"),
+        )
 
     try:
         response = await litellm.acompletion(
@@ -110,11 +171,36 @@ async def call_llm_streaming(
             stream=True,
         )
 
+        collected_chunks: list[str] = []
         async for chunk in response:
             content = chunk.choices[0].delta.content
             if content:
+                collected_chunks.append(content)
                 yield content
+
+        if trace_context and trace_context.get("project_id"):
+            await trace_event(
+                trace_context["project_id"],
+                trace_context.get("actor", "llm"),
+                "llm.stream.completed",
+                {
+                    "model": model,
+                    "response": "".join(collected_chunks),
+                    "chunk_count": len(collected_chunks),
+                },
+                session_id=trace_context.get("session_id"),
+                stage=trace_context.get("stage"),
+            )
 
     except Exception as e:
         logger.error("LLM streaming call failed (model=%s): %s", model, e)
+        if trace_context and trace_context.get("project_id"):
+            await trace_event(
+                trace_context["project_id"],
+                trace_context.get("actor", "llm"),
+                "llm.stream.failed",
+                {"model": model, "error": str(e)},
+                session_id=trace_context.get("session_id"),
+                stage=trace_context.get("stage"),
+            )
         raise

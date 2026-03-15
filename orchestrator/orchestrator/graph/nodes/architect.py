@@ -8,7 +8,12 @@ import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from orchestrator.api.websocket import emit_architect_message, emit_plan_updated
+from orchestrator.api.websocket import (
+    emit_architect_chunk,
+    emit_architect_message,
+    emit_plan_updated,
+)
+from orchestrator.docker_engine.manager import ContainerManager
 from orchestrator.execution_contract import (
     append_plan_delta_history,
     build_execution_contract,
@@ -19,10 +24,56 @@ from orchestrator.execution_contract import (
 from orchestrator.graph.state import AutomatronState
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config
 from orchestrator.llm.prompts import load_prompt
-from orchestrator.llm.provider import call_llm
+from orchestrator.llm.provider import call_llm, call_llm_streaming
 from orchestrator.models.project import save_chat_message
+from orchestrator.observability import trace_event
 
 logger = logging.getLogger(__name__)
+
+_container_manager = ContainerManager()
+
+
+async def _gather_workspace_context(state: AutomatronState) -> str:
+    """Collect workspace file tree and git diff for architect escalation context.
+
+    Gives the architect visibility into the actual code state so it doesn't
+    plan blind during re-planning.
+    """
+    container_id = state.get("container_id", "")
+    if not container_id:
+        return ""
+
+    sections: list[str] = []
+    try:
+        tree_result = await _container_manager.exec_in_container(
+            container_id,
+            "cd /workspace && find . -maxdepth 3 -not -path './node_modules/*' "
+            "-not -path './.next/*' -not -path './.git/*' -not -path './dist/*' "
+            "| head -80",
+            timeout=15,
+        )
+        if tree_result.exit_code == 0 and tree_result.output.strip():
+            sections.append(f"Workspace file tree:\n```\n{tree_result.output.strip()}\n```")
+    except Exception as exc:
+        logger.debug("Could not gather workspace tree: %s", exc)
+
+    try:
+        diff_result = await _container_manager.exec_in_container(
+            container_id,
+            "cd /workspace && git diff --stat HEAD~1 HEAD 2>/dev/null || git diff --stat HEAD 2>/dev/null",
+            timeout=15,
+        )
+        if diff_result.exit_code == 0 and diff_result.output.strip():
+            sections.append(f"Recent git changes:\n```\n{diff_result.output.strip()}\n```")
+    except Exception as exc:
+        logger.debug("Could not gather git diff: %s", exc)
+
+    builder_report = state.get("builder_report") or {}
+    touched = builder_report.get("files_touched", [])
+    if touched:
+        sections.append(f"Files touched by builder:\n{chr(10).join(f'- {f}' for f in touched[:30])}")
+
+    return "\n\n".join(sections)
 
 
 async def architect_node(state: AutomatronState) -> dict:
@@ -38,6 +89,7 @@ async def architect_node(state: AutomatronState) -> dict:
 
     if is_escalation:
         system_prompt = load_prompt("architect", state.get("architect_prompt_version", "v1"))
+        workspace_context = await _gather_workspace_context(state)
         escalation_context = (
             f"Current failing task index: {state.get('current_task_index', '?')}\n"
             f"Task: {state.get('current_task_text', '')}\n"
@@ -46,6 +98,11 @@ async def architect_node(state: AutomatronState) -> dict:
             f"Error detail: {builder_error}\n"
             f"Builder output:\n{state.get('builder_output', '')[-2000:]}\n\n"
             f"Last escalation:\n{json.dumps(state.get('last_escalation', {}), ensure_ascii=True)}\n\n"
+            f"Validation result:\n{json.dumps(state.get('task_validation_result', {}), ensure_ascii=True)}\n\n"
+        )
+        if workspace_context:
+            escalation_context += f"Current workspace state:\n{workspace_context}\n\n"
+        escalation_context += (
             "Return an updated PLAN.md, STACK_CONFIG.json if needed, execution_contract.json, "
             "and plan_delta.json describing only the changed tasks/decisions.\n"
             f"Existing PLAN.md:\n```markdown\n{plan_md}\n```"
@@ -73,7 +130,55 @@ async def architect_node(state: AutomatronState) -> dict:
         if not any(isinstance(message, HumanMessage) for message in messages):
             messages.append(HumanMessage(content=intake_text))
 
-    response_text = await call_llm(messages, model=architect_model)
+    # Stream architect response for real-time UI feedback.  Tokens are
+    # emitted to the WebSocket as they arrive so the operator can watch
+    # the plan being generated.  The full text is accumulated locally for
+    # artifact extraction.
+    await trace_event(
+        project_id,
+        "architect",
+        "architect.run.started",
+        {
+            "mode": "escalation" if is_escalation else "initial",
+            "model": architect_model,
+            "current_task_index": state.get("current_task_index", -1),
+            "active_task_id": state.get("active_task_id", ""),
+            "has_existing_plan": bool(plan_md),
+        },
+        session_id=state.get("session_id"),
+        stage=state.get("project_stage"),
+    )
+    response_chunks: list[str] = []
+    try:
+        async for chunk in call_llm_streaming(
+            messages,
+            model=architect_model,
+            trace_context={
+                "project_id": project_id,
+                "session_id": state.get("session_id"),
+                "actor": "architect",
+                "stage": state.get("project_stage"),
+                "prompt_name": "architect_v1",
+            },
+        ):
+            response_chunks.append(chunk)
+            await emit_architect_chunk(project_id, chunk)
+    except Exception:
+        logger.warning("Streaming failed for architect, falling back to non-streaming")
+        response_chunks = [
+            await call_llm(
+                messages,
+                model=architect_model,
+                trace_context={
+                    "project_id": project_id,
+                    "session_id": state.get("session_id"),
+                    "actor": "architect",
+                    "stage": state.get("project_stage"),
+                    "prompt_name": "architect_v1_fallback",
+                },
+            )
+        ]
+    response_text = "".join(response_chunks)
     new_plan_md = _extract_plan_md(response_text)
     stack_config = _extract_stack_config(response_text)
     execution_contract = extract_execution_contract(response_text)
@@ -111,6 +216,22 @@ async def architect_node(state: AutomatronState) -> dict:
 
     await save_chat_message(str(uuid.uuid4()), project_id, "architect", response_text)
     await emit_architect_message(project_id, response_text, streaming=False)
+    await trace_event(
+        project_id,
+        "architect",
+        "architect.run.completed",
+        {
+            "mode": "escalation" if is_escalation else "initial",
+            "produced_plan": bool(new_plan_md),
+            "produced_stack_config": bool(stack_config),
+            "produced_execution_contract": bool(execution_contract),
+            "produced_plan_delta": bool(plan_delta),
+            "next_task_id": next_task.get("task_id", "") if next_task else "",
+            "response_length": len(response_text),
+        },
+        session_id=state.get("session_id"),
+        stage="building" if is_escalation else "awaiting_plan_approval",
+    )
 
     if is_escalation:
         result: dict = {
@@ -177,6 +298,11 @@ async def _repair_architect_output(
             HumanMessage(content=repair_prompt),
         ],
         model=architect_model,
+        trace_context={
+            "project_id": None,
+            "actor": "architect",
+            "prompt_name": "architect_repair",
+        },
     )
     repaired_plan_md = _extract_plan_md(repair_response)
     repaired_stack_config = _extract_stack_config(repair_response) or stack_config

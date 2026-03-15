@@ -45,7 +45,8 @@ def test_build_execution_contract_from_plan():
     assert contract["validation_contract"]["health_path"] == "/api/health"
     assert len(contract["task_graph"]) == 2
     first_task = contract["task_graph"][0]
-    assert first_task["task_id"] == "task-001"
+    # Task IDs now include a content hash for stability across re-planning
+    assert first_task["task_id"].startswith("task-001-")
     assert first_task["done_when"]
     assert first_task["validation_commands"]
     assert first_task["allowed_autonomy"]

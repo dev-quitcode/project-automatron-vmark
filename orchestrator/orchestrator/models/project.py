@@ -297,6 +297,22 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trace_events (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                session_id TEXT,
+                actor TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                stage TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """
+        )
+
         await _ensure_columns(db, "projects", PROJECT_COLUMN_DEFS)
         await db.commit()
         logger.info("Database initialized: %s", db_path)
@@ -791,5 +807,59 @@ async def get_deploy_runs(project_id: str) -> list[dict[str, Any]]:
         for row in rows:
             item = dict(row)
             item["summary"] = _json_loads(item.pop("summary_json", "{}"), {})
+            result.append(item)
+        return result
+
+
+async def save_trace_event(
+    event_id: str,
+    project_id: str,
+    actor: str,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    stage: str | None = None,
+) -> None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO trace_events
+                (id, project_id, session_id, actor, event_type, stage, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                project_id,
+                session_id,
+                actor,
+                event_type,
+                stage,
+                _json_dumps(payload),
+                _now(),
+            ),
+        )
+        await db.commit()
+
+
+async def get_trace_events(project_id: str) -> list[dict[str, Any]]:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM trace_events
+            WHERE project_id = ?
+            ORDER BY created_at
+            """,
+            (project_id,),
+        )
+        rows = await cursor.fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = _json_loads(item.pop("payload_json", "{}"), {})
             result.append(item)
         return result

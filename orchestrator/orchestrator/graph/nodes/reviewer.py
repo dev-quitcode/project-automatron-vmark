@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from orchestrator.api.websocket import emit_builder_log
 from orchestrator.docker_engine.manager import ContainerManager
 from orchestrator.execution_contract import (
+    count_contract_progress,
     mark_contract_task_completed,
     normalize_execution_contract,
     update_contract_task_attempt,
@@ -20,10 +21,12 @@ from orchestrator.llm.configuration import default_llm_config, normalize_llm_con
 from orchestrator.llm.prompts import load_prompt
 from orchestrator.llm.provider import call_llm
 from orchestrator.models.project import save_task_log
+from orchestrator.observability import trace_event
 from orchestrator.plan_parser.parser import mark_task_completed
 from orchestrator.repository.manager import RepositoryManager
 from orchestrator.validation.workspace import (
     should_run_heavy_task_checks,
+    should_validate_release_artifacts,
     validate_workspace_contract_async,
 )
 
@@ -47,30 +50,65 @@ async def status_classifier_node(state: AutomatronState) -> dict:
     current_attempt = int(state.get("task_attempt_count", 0) or 0)
     max_self_retries = int(execution_contract.get("escalation_policy", {}).get("self_retries", 2) or 2)
 
-    if not builder_error and _looks_successful(builder_output):
-        status = "SUCCESS"
-        reason = ""
-    else:
-        system_prompt = load_prompt("reviewer", "v1")
-        classification_input = (
-            f"Task: {task_text}\n\n"
-            f"Builder Output (last 3000 chars):\n```\n{builder_output[-3000:]}\n```\n\n"
-            f"Error Details:\n{builder_error}\n\n"
-            'Return JSON: {"status": "...", "reason": "..."}'
+    await trace_event(
+        state["project_id"],
+        "reviewer",
+        "reviewer.run.started",
+        {
+            "task_id": task_id,
+            "task_index": task_index,
+            "current_attempt": current_attempt,
+            "builder_exit_code": state.get("builder_exit_code"),
+            "builder_status": state.get("builder_status", ""),
+        },
+        session_id=session_id,
+        stage=state.get("project_stage"),
+    )
+
+    # Always classify via LLM — naive string heuristics produce false
+    # positives/negatives (e.g. "Error handling implemented" triggers failure).
+    exit_code = int(state.get("builder_exit_code", -1) or -1)
+    system_prompt = load_prompt("reviewer", "v1")
+    classification_input = (
+        f"Task: {task_text}\n\n"
+        f"Builder exit code: {exit_code}\n\n"
+        f"Builder Output (last 3000 chars):\n```\n{builder_output[-3000:]}\n```\n\n"
+        f"Error Details:\n{builder_error}\n\n"
+    )
+    # Enrich with validation command failures when the validator exhausted fast retries
+    validation_command_results = state.get("validation_command_results") or []
+    failed_commands = [r for r in validation_command_results if r.get("exit_code", 0) != 0]
+    if failed_commands:
+        classification_input += "Validation command failures (from orchestrator):\n" + "\n".join(
+            f"- `{r['command']}` (exit {r['exit_code']}): {r['output'][-500:]}"
+            for r in failed_commands
+        ) + "\n\n"
+    classification_input += 'Return JSON: {"status": "...", "reason": "..."}'
+    try:
+        response = await call_llm(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=classification_input),
+            ],
+            model=reviewer_model,
+            trace_context={
+                "project_id": state["project_id"],
+                "session_id": session_id,
+                "actor": "reviewer",
+                "stage": state.get("project_stage"),
+                "prompt_name": "reviewer_v1",
+            },
         )
-        try:
-            response = await call_llm(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=classification_input),
-                ],
-                model=reviewer_model,
-            )
-            result = _parse_classification(response)
-            status = result["status"]
-            reason = result.get("reason", "")
-        except Exception as exc:
-            logger.error("Reviewer classification failed: %s", exc)
+        result = _parse_classification(response)
+        status = result["status"]
+        reason = result.get("reason", "")
+    except Exception as exc:
+        logger.error("Reviewer classification failed: %s", exc)
+        # On classifier failure, use exit code as fallback instead of heuristics
+        if exit_code == 0:
+            status = "SUCCESS"
+            reason = "Classification failed; exit code 0 used as fallback"
+        else:
             status = "AMBIGUITY"
             reason = f"Classification failed: {exc}"
 
@@ -87,12 +125,21 @@ async def status_classifier_node(state: AutomatronState) -> dict:
     next_attempt_count = current_attempt
     last_escalation: dict = {}
     if status in ("SUCCESS", "SILENT_DECISION"):
+        # Skip heavy checks when the validator node already confirmed validation_commands pass
+        validation_gate_passed = state.get("validation_gate_status") == "PASS"
+        require_heavy = not validation_gate_passed and should_run_heavy_task_checks(task_text)
+        completed_tasks, total_tasks = count_contract_progress(execution_contract)
         validation_result = await validate_workspace_contract_async(
             repository_manager.workspace_path(state["project_id"]),
             stack_config=state.get("stack_config", {}),
             container_manager=container_manager,
             container_id=state.get("container_id") or None,
-            require_heavy_checks=should_run_heavy_task_checks(task_text),
+            require_heavy_checks=require_heavy,
+            include_release_artifacts=should_validate_release_artifacts(
+                task_text,
+                completed_tasks=completed_tasks,
+                total_tasks=total_tasks,
+            ),
         )
         blocking_issues = validation_result.blocking_issues
         if blocking_issues:
@@ -236,6 +283,24 @@ async def status_classifier_node(state: AutomatronState) -> dict:
     )
     next_status = "building" if task_validation_result.get("escalate") or needs_self_retry else "validating"
 
+    await trace_event(
+        state["project_id"],
+        "reviewer",
+        "reviewer.run.completed",
+        {
+            "task_id": task_id,
+            "status": status,
+            "reason": reason,
+            "repairable": task_validation_result.get("repairable", False),
+            "escalate": task_validation_result.get("escalate", False),
+            "next_stage": next_stage,
+            "next_status": next_status,
+            "attempt_count": 0 if status in ("SUCCESS", "SILENT_DECISION") else (next_attempt_count or current_attempt + 1),
+        },
+        session_id=session_id,
+        stage=next_stage,
+    )
+
     return {
         "builder_status": status,
         "builder_error_detail": reason,
@@ -251,6 +316,12 @@ async def status_classifier_node(state: AutomatronState) -> dict:
 
 
 def _looks_successful(output: str) -> bool:
+    """Kept for backward compatibility but no longer used in the main classification path.
+
+    The main flow now always delegates to the LLM classifier + deterministic
+    validators because naive string matching produces false positives
+    (e.g. "Error handling implemented successfully" would wrongly fail).
+    """
     output_lower = output.lower()
     error_indicators = [
         "error:",

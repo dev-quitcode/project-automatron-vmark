@@ -22,6 +22,7 @@ from orchestrator.llm.configuration import (
 )
 from orchestrator.plan_parser.parser import get_next_task, get_progress
 from orchestrator.repository.manager import RepositoryManager
+from orchestrator.observability import trace_event
 from orchestrator.validation.workspace import validate_workspace_contract_async
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,35 @@ repository_manager = RepositoryManager()
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_init_script(stack_config: dict) -> str:
+    configured = str(stack_config.get("init_script", "") or "").strip()
+    if configured.endswith(".sh") and "/" not in configured and "\\" not in configured and " " not in configured:
+        return configured
+
+    stack_text = " ".join(
+        str(stack_config.get(key, "") or "")
+        for key in ("stack", "framework", "package_manager", "db", "orm", "styling")
+    ).lower()
+
+    if "next" in stack_text:
+        return "init-nextjs.sh"
+    if "vite" in stack_text or "react" in stack_text:
+        return "init-react-vite.sh"
+    if "python" in stack_text or "fastapi" in stack_text or "django" in stack_text or "flask" in stack_text:
+        return "init-python.sh"
+    return "init-generic.sh"
+
+
+def _bootstrap_marker_command(init_script: str) -> str | None:
+    if init_script == "init-nextjs.sh":
+        return "test -f /workspace/package.json && test -f /workspace/app/layout.tsx"
+    if init_script == "init-react-vite.sh":
+        return "test -f /workspace/package.json && test -d /workspace/src"
+    if init_script == "init-python.sh":
+        return "test -f /workspace/pyproject.toml || test -f /workspace/requirements.txt"
+    return None
 
 
 async def plan_review_node(state: AutomatronState) -> dict:
@@ -106,19 +136,63 @@ async def scaffold_node(state: AutomatronState) -> dict:
         port=port,
     )
 
-    init_script = stack_config.get("init_script") or "init-generic.sh"
+    init_script = _resolve_init_script(stack_config)
     llm_config = normalize_llm_config(state.get("llm_config") or default_llm_config())
     builder_provider = llm_config["builder"]["provider"]
     builder_model = llm_config["builder"]["model"]
     script_path = f"/opt/automatron/scripts/{init_script}"
+    await trace_event(
+        project_id,
+        "orchestrator",
+        "scaffold.bootstrap.started",
+        {
+            "init_script": init_script,
+            "stack": stack_config.get("stack", ""),
+            "framework": stack_config.get("framework", ""),
+        },
+        session_id=state.get("session_id"),
+        stage="scaffolding",
+    )
     try:
-        await container_manager.exec_in_container(
+        init_result = await container_manager.exec_in_container(
             container_info.container_id,
             f"bash {script_path}",
             timeout=180,
         )
+        if init_result.exit_code != 0:
+            raise RuntimeError(
+                f"Bootstrap script {init_script} failed with exit code {init_result.exit_code}: {init_result.output[-4000:]}"
+            )
+        marker_command = _bootstrap_marker_command(init_script)
+        if marker_command:
+            marker_result = await container_manager.exec_in_container(
+                container_info.container_id,
+                marker_command,
+                timeout=15,
+            )
+            if marker_result.exit_code != 0:
+                raise RuntimeError(
+                    f"Bootstrap script {init_script} completed without expected workspace markers"
+                )
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "scaffold.bootstrap.completed",
+            {"init_script": init_script},
+            session_id=state.get("session_id"),
+            stage="scaffolding",
+        )
     except Exception as exc:
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "scaffold.bootstrap.failed",
+            {"init_script": init_script, "error": str(exc)},
+            session_id=state.get("session_id"),
+            stage="error",
+        )
         logger.warning("Init script %s failed: %s", init_script, exc)
+        raise
 
     provider_key = provider_api_key(builder_provider)
     if provider_key:
@@ -172,6 +246,9 @@ async def task_selector_node(state: AutomatronState) -> dict:
                 "escalation_count": 0,
                 "task_attempt_count": 0,
                 "task_validation_result": {},
+                "fast_retry_count": 0,
+                "validation_gate_status": "",
+                "validation_command_results": [],
                 "project_stage": "building",
                 "status": "building",
             }
@@ -180,12 +257,15 @@ async def task_selector_node(state: AutomatronState) -> dict:
         same_task = previous_task_id == next_task_contract.get("task_id", "")
         return {
             "active_task_id": next_task_contract.get("task_id", ""),
-            "current_task_index": int(next_task_contract.get("task_id", "task-001").split("-")[-1]) - 1,
+            "current_task_index": _extract_task_index(next_task_contract.get("task_id", "task-001")),
             "current_task_text": _task_contract_to_text(next_task_contract),
             "total_tasks": total_tasks,
             "completed_tasks": completed_tasks,
             "escalation_count": state.get("escalation_count", 0) if same_task else 0,
             "task_attempt_count": state.get("task_attempt_count", 0) if same_task else 0,
+            "fast_retry_count": state.get("fast_retry_count", 0) if same_task else 0,
+            "validation_gate_status": "" if not same_task else state.get("validation_gate_status", ""),
+            "validation_command_results": [] if not same_task else state.get("validation_command_results", []),
             "builder_status": "",
             "builder_output": "",
             "builder_error_detail": "",
@@ -206,6 +286,9 @@ async def task_selector_node(state: AutomatronState) -> dict:
             "escalation_count": 0,
             "task_attempt_count": 0,
             "task_validation_result": {},
+            "fast_retry_count": 0,
+            "validation_gate_status": "",
+            "validation_command_results": [],
             "project_stage": "building",
             "status": "building",
         }
@@ -213,6 +296,7 @@ async def task_selector_node(state: AutomatronState) -> dict:
     previous_index = state.get("current_task_index", -1)
     escalation_count = 0 if next_task.index != previous_index else state.get("escalation_count", 0)
 
+    new_task = next_task.index != previous_index
     return {
         "active_task_id": f"task-{next_task.index + 1:03d}",
         "current_task_index": next_task.index,
@@ -220,7 +304,10 @@ async def task_selector_node(state: AutomatronState) -> dict:
         "total_tasks": progress.total,
         "completed_tasks": progress.completed,
         "escalation_count": escalation_count,
-        "task_attempt_count": 0 if next_task.index != previous_index else state.get("task_attempt_count", 0),
+        "task_attempt_count": 0 if new_task else state.get("task_attempt_count", 0),
+        "fast_retry_count": 0 if new_task else state.get("fast_retry_count", 0),
+        "validation_gate_status": "" if new_task else state.get("validation_gate_status", ""),
+        "validation_command_results": [] if new_task else state.get("validation_command_results", []),
         "builder_status": "",
         "builder_output": "",
         "builder_error_detail": "",
@@ -265,13 +352,44 @@ async def preview_check_node(state: AutomatronState) -> dict:
         container_manager=container_manager,
         container_id=state.get("container_id") or None,
         require_heavy_checks=True,
+        include_release_artifacts=True,
     )
     if validation_result.blocking_issues:
-        raise RuntimeError(
-            "; ".join(issue.message for issue in validation_result.blocking_issues)
+        # Return error state instead of crashing the graph — allows the
+        # operator to inspect, restart preview, or resume from this point.
+        blocking_summary = "; ".join(
+            issue.message for issue in validation_result.blocking_issues
         )
+        logger.error("Preview check blocked for %s: %s", project_id, blocking_summary)
+        return {
+            "preview_url": "",
+            "preview_status": "failed",
+            "preview_metadata": {
+                "error": blocking_summary,
+                "checked_at": _now(),
+            },
+            "project_stage": "frozen",
+            "status": "frozen",
+            "requires_human": True,
+            "human_intervention_reason": (
+                f"Preview validation failed: {blocking_summary}\n"
+                "Fix the issues and restart the preview, or approve to skip."
+            ),
+        }
     if validation_result.runtime_spec is None:
-        raise RuntimeError("Could not resolve preview runtime spec")
+        logger.error("Could not resolve preview runtime spec for %s", project_id)
+        return {
+            "preview_url": "",
+            "preview_status": "failed",
+            "preview_metadata": {
+                "error": "Could not resolve preview runtime spec",
+                "checked_at": _now(),
+            },
+            "project_stage": "frozen",
+            "status": "frozen",
+            "requires_human": True,
+            "human_intervention_reason": "Could not resolve preview runtime spec. Check workspace structure.",
+        }
 
     repository_manager.commit_workspace_changes(
         project_id,
@@ -370,6 +488,17 @@ def repository_manager_metadata_from_state(state: AutomatronState):
         develop_branch=state.get("develop_branch", "develop"),
         feature_branch=state.get("feature_branch", "feature/1-project"),
     )
+
+
+def _extract_task_index(task_id: str) -> int:
+    """Extract the numeric index from a task ID like 'task-001' or 'task-001-abc123'."""
+    parts = task_id.split("-")
+    if len(parts) >= 2:
+        try:
+            return int(parts[1]) - 1
+        except ValueError:
+            pass
+    return 0
 
 
 def _task_contract_to_text(task_contract: dict) -> str:

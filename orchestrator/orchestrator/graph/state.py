@@ -111,6 +111,10 @@ class AutomatronState(TypedDict, total=False):
     feature_branch: str
     repo_ready: bool
 
+    fast_retry_count: int
+    validation_gate_status: str
+    validation_command_results: list
+
     preview_url: str
     preview_status: str
     preview_metadata: dict

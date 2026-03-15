@@ -38,6 +38,12 @@ fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
 EOF
 fi
 
+# Install runtime dependencies in the real workspace so validation/build
+# commands can run immediately after scaffold.
+if [ -f package.json ]; then
+  npm install
+fi
+
 mkdir -p app/api/health
 if [ ! -f app/api/health/route.ts ]; then
   cat > app/api/health/route.ts <<'EOF'

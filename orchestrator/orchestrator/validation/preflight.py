@@ -11,6 +11,7 @@ from docker.errors import DockerException, ImageNotFound
 
 from orchestrator.config import settings
 from orchestrator.docker_engine.manager import ContainerManager
+from orchestrator.llm.catalog import get_provider_model_catalog
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config, provider_api_key
 from orchestrator.repository.manager import RepositoryManager
 
@@ -134,7 +135,7 @@ class PreflightService:
         checks.extend(self._docker_checks())
         checks.extend(self._workspace_checks())
         checks.extend(self._github_configuration_checks())
-        checks.extend(self._llm_provider_checks(project))
+        checks.extend(await self._llm_provider_checks(project))
         return checks
 
     async def _deploy_checks(self, project: dict[str, Any]) -> list[PreflightCheck]:
@@ -294,13 +295,37 @@ class PreflightService:
             )
         return checks
 
-    def _llm_provider_checks(self, project: dict[str, Any]) -> list[PreflightCheck]:
+    async def _llm_provider_checks(self, project: dict[str, Any]) -> list[PreflightCheck]:
         checks: list[PreflightCheck] = []
         llm_config = normalize_llm_config(project.get("llm_config") or default_llm_config())
         for role, role_config in llm_config.items():
             provider = role_config["provider"]
             if provider_api_key(provider):
                 checks.append(_ok(f"llm_provider_{role}", f"{role.capitalize()} provider `{provider}` is configured"))
+                catalog = await get_provider_model_catalog(provider)
+                available_model_ids = {model["id"] for model in catalog.get("models", [])}
+                selected_model = role_config["model"]
+                if catalog.get("configured") and available_model_ids and selected_model not in available_model_ids:
+                    checks.append(
+                        _blocking(
+                            f"llm_model_{role}_unavailable",
+                            f"{role.capitalize()} model `{selected_model}` is not available for provider `{provider}`",
+                            details={
+                                "role": role,
+                                "provider": provider,
+                                "model": selected_model,
+                                "available_models_preview": sorted(list(available_model_ids))[:10],
+                            },
+                        )
+                    )
+                else:
+                    checks.append(
+                        _ok(
+                            f"llm_model_{role}",
+                            f"{role.capitalize()} model `{selected_model}` is available",
+                            details={"role": role, "provider": provider, "model": selected_model},
+                        )
+                    )
             else:
                 checks.append(
                     _blocking(

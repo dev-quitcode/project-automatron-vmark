@@ -11,9 +11,11 @@ from langgraph.graph import END, START, StateGraph
 
 from orchestrator.config import settings
 from orchestrator.graph.edges import (
+    route_after_architect,
     route_after_plan_review,
     route_after_status_classifier,
     route_after_task_selector,
+    route_after_validator,
 )
 from orchestrator.graph.nodes.architect import architect_node
 from orchestrator.graph.nodes.builder import builder_node
@@ -28,6 +30,7 @@ from orchestrator.graph.nodes.scaffold import (
     scaffold_node,
     task_selector_node,
 )
+from orchestrator.graph.nodes.validator import validator_node
 from orchestrator.graph.state import AutomatronState
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ def build_graph() -> StateGraph:
     builder.add_node("scaffold", scaffold_node)
     builder.add_node("task_selector", task_selector_node)
     builder.add_node("builder", builder_node)
+    builder.add_node("validator", validator_node)
     builder.add_node("status_classifier", status_classifier_node)
     builder.add_node("freeze", freeze_node)
     builder.add_node("preview_check", preview_check_node)
@@ -51,12 +55,13 @@ def build_graph() -> StateGraph:
     builder.add_node("ready_for_deploy", ready_for_deploy_node)
 
     builder.add_edge(START, "architect")
-    builder.add_edge("architect", "plan_review")
+    builder.add_conditional_edges("architect", route_after_architect)
     builder.add_conditional_edges("plan_review", route_after_plan_review)
     builder.add_edge("repo_prepare", "scaffold")
     builder.add_edge("scaffold", "task_selector")
     builder.add_conditional_edges("task_selector", route_after_task_selector)
-    builder.add_edge("builder", "status_classifier")
+    builder.add_edge("builder", "validator")
+    builder.add_conditional_edges("validator", route_after_validator)
     builder.add_conditional_edges("status_classifier", route_after_status_classifier)
     builder.add_edge("freeze", "plan_review")
     builder.add_edge("preview_check", "preview_review")

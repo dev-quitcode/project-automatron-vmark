@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.docker_engine.manager import ExecResult
-from orchestrator.validation.workspace import validate_workspace_contract, validate_workspace_contract_async
+from orchestrator.validation.workspace import (
+    should_validate_release_artifacts,
+    validate_workspace_contract,
+    validate_workspace_contract_async,
+)
 
 
 def _write_valid_nextjs_workspace(workspace):
@@ -84,6 +88,54 @@ def test_validate_workspace_contract_flags_default_metadata_and_missing_health(t
     assert "stack_next_default_metadata" in codes
     assert result.runtime_spec is not None
     assert result.runtime_spec.readiness_path == "/api/health"
+
+
+def test_validate_workspace_contract_can_skip_release_artifact_gates(tmp_path):
+    workspace = tmp_path
+    (workspace / "app" / "api" / "health").mkdir(parents=True, exist_ok=True)
+    (workspace / "prisma").mkdir(parents=True, exist_ok=True)
+    (workspace / "next.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (workspace / "app" / "layout.tsx").write_text(
+        "export const metadata = { title: 'Invoice Dashboard', description: 'Custom app' };\n",
+        encoding="utf-8",
+    )
+    (workspace / "app" / "api" / "health" / "route.ts").write_text(
+        "export async function GET() { return Response.json({ status: 'ok', service: 'invoice-dashboard', timestamp: new Date().toISOString() }); }\n",
+        encoding="utf-8",
+    )
+    (workspace / "prisma" / "schema.prisma").write_text(
+        "datasource db { provider = \"sqlite\" url = \"file:./dev.db\" }\n generator client { provider = \"prisma-client-js\" }\n model Invoice { id String @id }\n",
+        encoding="utf-8",
+    )
+
+    result = validate_workspace_contract(
+        workspace,
+        stack_config={"framework": "nextjs", "database": "prisma"},
+        include_release_artifacts=False,
+    )
+
+    codes = {issue.code for issue in result.blocking_issues}
+    assert "artifact_dockerfile_missing" not in codes
+    assert "artifact_deploy_compose_missing" not in codes
+    assert result.ok
+
+
+def test_should_validate_release_artifacts_only_on_late_or_deploy_tasks():
+    assert not should_validate_release_artifacts(
+        "Verify and adapt scaffold",
+        completed_tasks=0,
+        total_tasks=10,
+    )
+    assert should_validate_release_artifacts(
+        "Create Dockerfile",
+        completed_tasks=1,
+        total_tasks=10,
+    )
+    assert should_validate_release_artifacts(
+        "Implement final page polish",
+        completed_tasks=8,
+        total_tasks=10,
+    )
 
 
 @pytest.mark.asyncio

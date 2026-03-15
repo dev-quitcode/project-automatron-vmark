@@ -50,11 +50,13 @@ def validate_workspace_contract(
     workspace_path: Path,
     *,
     stack_config: dict[str, Any] | None = None,
+    include_release_artifacts: bool = True,
 ) -> StackValidatorResult:
     runtime_spec = resolve_preview_runtime_spec(workspace_path, stack_config)
     issues: list[ValidationIssue] = []
 
-    issues.extend(_validate_artifact_shapes(workspace_path))
+    if include_release_artifacts:
+        issues.extend(_validate_artifact_shapes(workspace_path))
 
     stack_key = _detect_stack_key(workspace_path, stack_config, runtime_spec)
     if stack_key.startswith("nextjs"):
@@ -75,8 +77,13 @@ async def validate_workspace_contract_async(
     container_manager: Any | None = None,
     container_id: str | None = None,
     require_heavy_checks: bool = False,
+    include_release_artifacts: bool = True,
 ) -> StackValidatorResult:
-    result = validate_workspace_contract(workspace_path, stack_config=stack_config)
+    result = validate_workspace_contract(
+        workspace_path,
+        stack_config=stack_config,
+        include_release_artifacts=include_release_artifacts,
+    )
     if (
         require_heavy_checks
         and container_manager
@@ -110,6 +117,30 @@ def should_run_heavy_task_checks(task_text: str) -> bool:
         "build",
     )
     return any(keyword in lowered for keyword in heavy_keywords)
+
+
+def should_validate_release_artifacts(
+    task_text: str,
+    *,
+    completed_tasks: int = 0,
+    total_tasks: int = 0,
+) -> bool:
+    lowered = (task_text or "").lower()
+    deploy_keywords = (
+        "dockerfile",
+        "docker",
+        "deploy",
+        "workflow",
+        "github actions",
+        "ci/cd",
+        "compose",
+        "release",
+    )
+    if any(keyword in lowered for keyword in deploy_keywords):
+        return True
+    if total_tasks > 0 and completed_tasks >= max(total_tasks - 3, 0):
+        return True
+    return False
 
 
 def _validate_artifact_shapes(workspace_path: Path) -> list[ValidationIssue]:

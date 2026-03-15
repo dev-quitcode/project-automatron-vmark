@@ -8,6 +8,7 @@ from urllib.parse import parse_qs
 
 from orchestrator.api.socket_server import sio
 from orchestrator.models.project import save_chat_message
+from orchestrator.observability import trace_event
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,12 @@ async def on_chat_message(sid: str, data: dict) -> None:
         return
 
     await save_chat_message(str(uuid.uuid4()), project_id, "user", text)
+    await trace_event(
+        project_id,
+        "operator",
+        "chat.message.received",
+        {"text": text},
+    )
     await sio.emit(
         "architect:message",
         {
@@ -71,6 +78,19 @@ async def emit_architect_message(project_id: str, content: str, streaming: bool 
             "project_id": project_id,
             "content": content,
             "is_streaming": streaming,
+        },
+        room=_project_room(project_id),
+    )
+
+
+async def emit_architect_chunk(project_id: str, chunk: str) -> None:
+    """Emit a single streaming token from the architect for real-time UI updates."""
+    await sio.emit(
+        "architect:message",
+        {
+            "project_id": project_id,
+            "content": chunk,
+            "is_streaming": True,
         },
         room=_project_room(project_id),
     )

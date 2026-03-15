@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from typing import Any
@@ -54,6 +55,16 @@ def extract_plan_delta(response: str) -> dict[str, Any] | None:
     return None
 
 
+def _stable_task_id(index: int, title: str) -> str:
+    """Generate a stable task ID from a short hash of the title.
+
+    This prevents ID drift when the architect reorders or inserts tasks
+    during re-planning.  The index prefix keeps IDs roughly sortable.
+    """
+    digest = hashlib.sha256(title.encode()).hexdigest()[:6]
+    return f"task-{index + 1:03d}-{digest}"
+
+
 def build_execution_contract(
     *,
     project_name: str,
@@ -67,17 +78,40 @@ def build_execution_contract(
         workspace_path=_VirtualWorkspace.from_stack(stack_config or {}),
         stack_config=stack_config or {},
     )
-    existing_tasks = {
-        task.get("task_id"): task
-        for task in (existing_contract or {}).get("task_graph", [])
-        if isinstance(task, dict)
-    }
+    # Build lookup maps for existing tasks by both ID and title so we can
+    # preserve state (attempt_count, autonomy overrides) across re-plans
+    # even when the architect reorders tasks.
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    existing_by_title: dict[str, dict[str, Any]] = {}
+    for task in (existing_contract or {}).get("task_graph", []):
+        if isinstance(task, dict):
+            tid = task.get("task_id", "")
+            existing_by_id[tid] = task
+            title = task.get("title", "")
+            if title:
+                existing_by_title[title] = task
     task_graph: list[dict[str, Any]] = []
 
     for index, task in enumerate(parsed.tasks):
-        task_id = f"task-{index + 1:03d}"
-        previous = existing_tasks.get(task_id, {})
-        validation_commands = _default_validation_commands(runtime_spec, stack_config or {}, task.description)
+        task_id = _stable_task_id(index, task.title)
+        # Try matching by title first (stable across reordering), then by
+        # positional ID for backward compatibility with older contracts.
+        positional_id = f"task-{index + 1:03d}"
+        previous = (
+            existing_by_title.get(task.title)
+            or existing_by_id.get(task_id)
+            or existing_by_id.get(positional_id)
+            or {}
+        )
+        prev_dep_id = _stable_task_id(index - 1, parsed.tasks[index - 1].title) if index > 0 else None
+        # Prefer architect-provided validation_commands when they exist;
+        # fall back to auto-generated defaults otherwise.
+        prev_commands = previous.get("validation_commands", [])
+        validation_commands = (
+            prev_commands
+            if prev_commands
+            else _default_validation_commands(runtime_spec, stack_config or {}, task.description)
+        )
         task_graph.append(
             {
                 "task_id": task_id,
@@ -96,7 +130,7 @@ def build_execution_contract(
                 "validation_commands": validation_commands,
                 "allowed_autonomy": previous.get("allowed_autonomy", DEFAULT_ALLOWED_AUTONOMY),
                 "escalate_if": previous.get("escalate_if", DEFAULT_ESCALATE_IF),
-                "depends_on": [f"task-{index:03d}"] if index > 0 else [],
+                "depends_on": [prev_dep_id] if prev_dep_id else [],
                 "status": "completed" if _is_task_completed(plan_md, task.line_number) else "pending",
                 "completed": _is_task_completed(plan_md, task.line_number),
                 "attempt_count": int(previous.get("attempt_count", 0)),
@@ -219,14 +253,26 @@ def update_contract_task_attempt(
 def sync_contract_with_plan(execution_contract: dict[str, Any], plan_md: str) -> dict[str, Any]:
     contract = normalize_execution_contract(execution_contract)
     parsed = parse_plan(plan_md)
+    # Build title -> contract_task lookup for matching across reorderings
+    contract_by_title: dict[str, dict[str, Any]] = {}
+    for ct in contract["task_graph"]:
+        title = ct.get("title", "")
+        if title:
+            contract_by_title[title] = ct
     for index, task in enumerate(parsed.tasks):
-        task_id = f"task-{index + 1:03d}"
+        stable_id = _stable_task_id(index, task.title)
+        positional_id = f"task-{index + 1:03d}"
         completed = _is_task_completed(plan_md, task.line_number)
-        for contract_task in contract["task_graph"]:
-            if contract_task.get("task_id") == task_id:
-                contract_task["completed"] = completed
-                contract_task["status"] = "completed" if completed else contract_task.get("status", "pending")
-                break
+        # Match by title first, then by stable ID, then by positional ID
+        matched = contract_by_title.get(task.title)
+        if not matched:
+            for contract_task in contract["task_graph"]:
+                if contract_task.get("task_id") in (stable_id, positional_id):
+                    matched = contract_task
+                    break
+        if matched:
+            matched["completed"] = completed
+            matched["status"] = "completed" if completed else matched.get("status", "pending")
     return contract
 
 

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find 'd:\\\\Work\\\\Project Automatron\\\\orchestrator' -type f \\\\\\(-name *.py -path */test* -o -name test_*.py -o -name *_test.py \\\\\\))",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m ruff check orchestrator/)",
+      "Bash(python -m ruff check orchestrator/graph/ orchestrator/execution_contract.py orchestrator/api/websocket.py orchestrator/llm/provider.py orchestrator/prompts/)",
+      "Bash(python -m ruff check --fix orchestrator/graph/nodes/architect.py orchestrator/llm/provider.py)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -m ruff check orchestrator/graph/ orchestrator/execution_contract.py tests/test_validator_node.py tests/test_graph.py)",
+      "Bash(python -m ruff check --fix orchestrator/graph/graph.py tests/test_validator_node.py)"
+    ]
+  }
+}

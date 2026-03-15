@@ -13,6 +13,7 @@ from orchestrator.graph.runner import (
     _make_thread_config,
     deploy_project as runner_deploy,
     get_checkpoints,
+    get_runtime_project as runner_get_runtime_project,
     get_task_status as runner_get_task_status,
     is_running,
     restart_preview as runner_restart_preview,
@@ -33,6 +34,7 @@ from orchestrator.models.project import (
     get_deploy_runs,
     get_project,
     get_task_logs,
+    get_trace_events,
     sync_project_from_state,
     update_project_deploy_target,
     update_project_llm_config,
@@ -200,7 +202,7 @@ class TaskStatusResponse(BaseModel):
 
 
 async def _get_required_project(project_id: str) -> dict[str, Any]:
-    project = await get_project(project_id)
+    project = await runner_get_runtime_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -457,6 +459,12 @@ async def api_get_preview_url(project_id: str) -> dict[str, str | None]:
 async def api_get_project_deploy_runs(project_id: str) -> list[dict[str, Any]]:
     await _get_required_project(project_id)
     return await get_deploy_runs(project_id)
+
+
+@router.get("/projects/{project_id}/trace")
+async def api_get_project_trace(project_id: str) -> list[dict[str, Any]]:
+    await _get_required_project(project_id)
+    return await get_trace_events(project_id)
 
 
 def _raise_for_preflight_failure(result: dict[str, Any]) -> None:

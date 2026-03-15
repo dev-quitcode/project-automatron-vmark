@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import shlex
@@ -47,6 +48,10 @@ class ContainerManager:
         except DockerException as e:
             logger.warning("Docker client initialization failed: %s", e)
             self.client = None  # type: ignore[assignment]
+
+    @staticmethod
+    async def _run_blocking(func, /, *args, **kwargs):
+        return await asyncio.to_thread(func, *args, **kwargs)
 
     async def create_project_container(
         self,
@@ -99,7 +104,7 @@ class ContainerManager:
 
         try:
             try:
-                existing = self.client.containers.get(container_name)
+                existing = await self._run_blocking(self.client.containers.get, container_name)
             except NotFound:
                 existing = None
 
@@ -109,9 +114,10 @@ class ContainerManager:
                     container_name,
                     existing.id[:12],
                 )
-                existing.remove(force=True)
+                await self._run_blocking(existing.remove, force=True)
 
-            container = self.client.containers.run(
+            container = await self._run_blocking(
+                self.client.containers.run,
                 image=image,
                 name=container_name,
                 command="sleep infinity",  # Keep alive
@@ -132,7 +138,8 @@ class ContainerManager:
             # Windows bind mounts commonly surface as root-owned paths inside the
             # Linux container. Normalize ownership once so builder tasks can write
             # to /workspace without sudo workarounds.
-            container.exec_run(
+            await self._run_blocking(
+                container.exec_run,
                 cmd=[
                     "bash",
                     "-lc",
@@ -146,7 +153,8 @@ class ContainerManager:
                 ],
                 user="root",
             )
-            container.exec_run(
+            await self._run_blocking(
+                container.exec_run,
                 cmd=[
                     "bash",
                     "-lc",
@@ -196,14 +204,15 @@ class ContainerManager:
             raise RuntimeError("Docker client not available")
 
         try:
-            container = self.client.containers.get(container_id)
+            container = await self._run_blocking(self.client.containers.get, container_id)
             wrapped_command = command
             if timeout > 0:
                 wrapped_command = (
                     f"timeout --signal=TERM {timeout}s "
                     f"bash -lc {shlex.quote(command)}"
                 )
-            exec_result = container.exec_run(
+            exec_result = await self._run_blocking(
+                container.exec_run,
                 cmd=["bash", "-lc", wrapped_command],
                 workdir="/workspace",
                 user="developer",
@@ -230,8 +239,8 @@ class ContainerManager:
         if not self.client:
             return
         try:
-            container = self.client.containers.get(container_id)
-            container.stop(timeout=10)
+            container = await self._run_blocking(self.client.containers.get, container_id)
+            await self._run_blocking(container.stop, timeout=10)
             logger.info("Container %s stopped", container_id[:12])
         except NotFound:
             logger.warning("Container %s not found", container_id[:12])
@@ -243,8 +252,8 @@ class ContainerManager:
         if not self.client:
             return
         try:
-            container = self.client.containers.get(container_id)
-            container.restart(timeout=10)
+            container = await self._run_blocking(self.client.containers.get, container_id)
+            await self._run_blocking(container.restart, timeout=10)
             logger.info("Container %s restarted", container_id[:12])
         except DockerException as e:
             logger.error("Failed to restart container %s: %s", container_id[:12], e)
@@ -254,8 +263,8 @@ class ContainerManager:
         if not self.client:
             return
         try:
-            container = self.client.containers.get(container_id)
-            container.remove(force=True)
+            container = await self._run_blocking(self.client.containers.get, container_id)
+            await self._run_blocking(container.remove, force=True)
             logger.info("Container %s removed", container_id[:12])
         except NotFound:
             pass
@@ -269,8 +278,9 @@ class ContainerManager:
         if not self.client:
             return ""
         try:
-            container = self.client.containers.get(container_id)
-            logs = container.logs(tail=tail).decode("utf-8", errors="replace")
+            container = await self._run_blocking(self.client.containers.get, container_id)
+            raw_logs = await self._run_blocking(container.logs, tail=tail)
+            logs = raw_logs.decode("utf-8", errors="replace")
             return logs
         except DockerException as e:
             logger.error("Failed to get logs from %s: %s", container_id[:12], e)
@@ -290,7 +300,7 @@ class ContainerManager:
             return
 
         try:
-            container = self.client.containers.get(container_id)
+            container = await self._run_blocking(self.client.containers.get, container_id)
 
             # Build tar archive in memory
             data = content.encode("utf-8")
@@ -303,7 +313,7 @@ class ContainerManager:
 
             # Put archive into container
             path_dir = "/".join(container_path.split("/")[:-1])
-            container.put_archive(path_dir, tarstream)
+            await self._run_blocking(container.put_archive, path_dir, tarstream)
 
             logger.debug("Copied file to %s:%s", container_id[:12], container_path)
 

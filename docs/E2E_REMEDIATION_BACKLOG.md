@@ -159,6 +159,125 @@ Suggested owner tags:
 - Done when:
   - deploy configuration can be validated before first production push
 
+### B-025 Fix run-state drift between trace, project summary, and task-status
+
+- Area: `Platform`
+- Problem:
+  - the clean autonomous run progressed from planning into builder/validator
+    retries, but the project DTO still reported:
+    - `status=planning`
+    - `project_stage=awaiting_plan_approval`
+    - `active_task_id=task-001...`
+  - `task-status` also remained stuck on task 1 while trace showed the run had
+    already advanced to task 2
+- Work:
+  - make project summary fields derive from the same canonical execution state as
+    trace/routing
+  - update persisted state immediately after:
+    - task completion
+    - validator completion
+    - reviewer decision
+    - task selection
+    - architect delta / resume
+  - add regression tests that compare:
+    - trace latest event
+    - `GET /projects/{id}`
+    - `GET /projects/{id}/task-status`
+- Done when:
+  - operator-facing state always reflects the current live task/stage
+  - trace, task-status, and project summary cannot disagree after a run step
+
+### B-026 Fix shell escaping in deterministic validation commands
+
+- Area: `Validation`
+- Problem:
+  - the Prisma smoke validation command failed even after builder produced a
+    working Prisma setup because the command string contained
+    `client.$disconnect()`
+  - when executed through the shell, `$disconnect` was expanded away, producing
+    invalid JavaScript like `client.()`
+- Work:
+  - stop passing raw JS snippets with `$` through shell-sensitive string paths
+  - run deterministic checks using one of:
+    - argument arrays without shell interpolation
+    - checked-in helper scripts
+    - temporary files executed by node/python directly
+  - add regression tests for commands containing `$`, quotes, and nested JSON
+- Done when:
+  - validator command execution is shell-safe and deterministic
+  - Prisma smoke checks fail only on real Prisma issues, not quoting bugs
+
+### B-027 Align task granularity with validation gates
+
+- Area: `Validation`
+- Problem:
+  - task 1 (`Verify and adapt scaffold`) was initially marked blocked because
+    validator demanded artifacts that belong to later tasks:
+    - `Dockerfile`
+    - `app/api/health/route.ts`
+    - `prisma/schema.prisma`
+  - this forces builder to solve future phases too early and distorts retry
+    behavior
+- Work:
+  - split validators into:
+    - task-local gates
+    - phase gates
+    - release/deploy gates
+  - enforce deploy artifacts only at the correct phase boundary
+  - ensure task contracts declare the exact artifacts expected for that task
+- Done when:
+  - scaffold/setup tasks are validated only against their own contract
+  - release artifacts are enforced before preview/release readiness, not during
+    unrelated early tasks
+
+### B-028 Make Prisma validation and contract version-aware
+
+- Area: `Validation`
+- Problem:
+  - current Next.js + Prisma 7 flow uses `@prisma/adapter-libsql` and
+    `prisma.config.ts`, but validation still assumes an older generic
+    `new PrismaClient()` smoke pattern
+  - builder produced a plausible Prisma 7 setup, yet validator/reviewer still
+    treated it as broken because the smoke check did not match the selected
+    integration style
+- Work:
+  - add explicit Prisma-version-aware validation strategies
+  - for Prisma 7 + libsql adapter:
+    - validate `prisma.config.ts`
+    - validate adapter dependency presence
+    - run a stack-aware smoke check using the actual app Prisma wrapper
+  - stop using a one-size-fits-all Prisma command across all stacks/versions
+- Done when:
+  - Prisma validation matches the selected stack contract and Prisma major
+    version
+  - valid adapter-based setups pass without manual intervention
+
+### B-029 Improve session/run observability schema
+
+- Area: `UI/API`
+- Problem:
+  - `sessions` currently stores only:
+    - `id`
+    - `project_id`
+    - `thread_id`
+    - `phase`
+    - `started_at`
+    - `ended_at`
+  - this is too thin for diagnosing live autonomous runs and does not capture
+    current task, terminal status, retry count, or failure summary
+- Work:
+  - extend session/run persistence with:
+    - run status
+    - active task id
+    - last event type
+    - last validation gate result
+    - last failure summary
+  - expose these fields in API/UI timeline views
+- Done when:
+  - operators can understand a stuck/failed run without querying trace and DB
+    separately
+  - session records are useful as a first-line debugging surface
+
 ## Before Next E2E
 
 ### B-009 Introduce explicit `awaiting_clarification` stage

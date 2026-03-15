@@ -19,6 +19,7 @@ from orchestrator.api.websocket import (
 from orchestrator.config import settings
 from orchestrator.deployment.manager import DeploymentManager
 from orchestrator.docker_engine.manager import ContainerManager
+from orchestrator.docker_engine.port_allocator import PortAllocator
 from orchestrator.execution_contract import default_task_status_payload
 from orchestrator.graph.graph import compile_graph
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config
@@ -34,6 +35,7 @@ from orchestrator.models.project import (
     upsert_deploy_run,
 )
 from orchestrator.models.session import create_session, end_session
+from orchestrator.observability import trace_event
 from orchestrator.repository.manager import RepositoryManager
 from orchestrator.validation.preflight import PreflightService
 from orchestrator.validation.workspace import validate_workspace_contract_async
@@ -44,6 +46,7 @@ _active_runs: dict[str, asyncio.Task] = {}
 _compiled_graph = None
 repository_manager = RepositoryManager()
 container_manager = ContainerManager()
+port_allocator = PortAllocator(start=settings.port_range_start, end=settings.port_range_end)
 preflight_service = PreflightService(
     container_manager=container_manager,
     repository_manager=repository_manager,
@@ -213,7 +216,7 @@ async def run_preflight(project_id: str, phase: str) -> dict[str, Any]:
 
 
 async def get_task_status(project_id: str) -> dict[str, Any]:
-    project = await get_project(project_id)
+    project = await get_runtime_project(project_id)
     if not project:
         return {
             "project_id": project_id,
@@ -243,6 +246,95 @@ async def get_task_status(project_id: str) -> dict[str, Any]:
     return payload
 
 
+def _overlay_project_with_runtime_state(project: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(project)
+    field_map = {
+        "plan_md": "plan_md",
+        "stack_config": "stack_config",
+        "llm_config": "llm_config",
+        "execution_contract": "execution_contract",
+        "contract_version": "contract_version",
+        "decision_log": "decision_log",
+        "plan_delta_history": "plan_delta_history",
+        "project_stage": "project_stage",
+        "status": "status",
+        "active_task_id": "active_task_id",
+        "task_attempt_count": "task_attempt_count",
+        "task_validation_result": "task_validation_result",
+        "last_escalation": "last_escalation",
+        "builder_report": "builder_report",
+        "container_id": "container_id",
+        "repo_name": "repo_name",
+        "repo_url": "repo_url",
+        "repo_clone_url": "repo_clone_url",
+        "default_branch": "default_branch",
+        "develop_branch": "develop_branch",
+        "feature_branch": "feature_branch",
+        "repo_ready": "repo_ready",
+        "preview_url": "preview_url",
+        "preview_status": "preview_status",
+        "preview_metadata": "preview_metadata",
+        "ci_status": "ci_status",
+        "ci_run_id": "ci_run_id",
+        "ci_run_url": "ci_run_url",
+        "deploy_status": "deploy_status",
+        "deploy_run_url": "deploy_run_url",
+        "deploy_commit_sha": "deploy_commit_sha",
+        "github_environment_name": "github_environment_name",
+        "last_workflow_sync_at": "last_workflow_sync_at",
+        "plan_approved": "plan_approved",
+        "preview_approved": "preview_approved",
+    }
+    for state_key, project_key in field_map.items():
+        if state_key in state:
+            merged[project_key] = state.get(state_key)
+    if "container_port" in state:
+        merged["port"] = state.get("container_port")
+        merged["preview_port"] = state.get("container_port")
+    return merged
+
+
+async def get_runtime_project(project_id: str) -> dict[str, Any] | None:
+    project = await get_project(project_id)
+    if not project:
+        return None
+
+    try:
+        graph = await _aget_graph()
+        snapshot = await graph.aget_state(_make_thread_config(project_id))
+    except Exception:
+        return project
+
+    values = snapshot.values if snapshot and snapshot.values else {}
+    if not values:
+        return project
+    return _overlay_project_with_runtime_state(project, values)
+
+
+async def _cleanup_run_resources(project_id: str) -> None:
+    project = await get_project(project_id)
+    if not project:
+        return
+
+    container_id = project.get("container_id")
+    if container_id:
+        await container_manager.remove_container(container_id)
+    await port_allocator.release(project_id)
+    await sync_project_from_state(
+        project_id,
+        {
+            "container_id": "",
+            "container_port": 0,
+            "preview_url": "",
+            "preview_status": "pending",
+            "preview_metadata": {
+                "cleanup_reason": "graph_run_failed",
+                "cleaned_at": _now(),
+            },
+        },
+    )
+
+
 async def _persist_and_emit(project_id: str, graph: Any, config: dict[str, Any]) -> dict[str, Any]:
     snapshot = await graph.aget_state(config)
     values = snapshot.values if snapshot and snapshot.values else {}
@@ -268,6 +360,22 @@ async def _persist_and_emit(project_id: str, graph: Any, config: dict[str, Any])
                 values.get("human_intervention_reason", "Review required"),
                 stage=values.get("project_stage"),
             )
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "graph.state.persisted",
+            {
+                "status": values.get("status", "pending"),
+                "project_stage": values.get("project_stage", "intake"),
+                "active_task_id": values.get("active_task_id", ""),
+                "current_task_index": values.get("current_task_index", -1),
+                "builder_status": values.get("builder_status", ""),
+                "validation_gate_status": values.get("validation_gate_status", ""),
+                "requires_human": values.get("requires_human", False),
+            },
+            session_id=values.get("session_id"),
+            stage=values.get("project_stage"),
+        )
     return values
 
 
@@ -285,6 +393,17 @@ async def _run_graph(
     try:
         phase = "PLANNING" if initial_state else "RESUME"
         await create_session(session_id, project_id, config["configurable"]["thread_id"], phase)
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "graph.run.started",
+            {
+                "mode": "initial" if initial_state is not None else "resume",
+                "phase": phase,
+            },
+            session_id=session_id,
+            stage=(initial_state or resume_state_patch or {}).get("project_stage"),
+        )
 
         if initial_state is not None:
             initial_state["session_id"] = session_id
@@ -305,16 +424,41 @@ async def _run_graph(
             await update_project_status(project_id, _status_from_stage(stage))
         elif stage == "frozen":
             await update_project_status(project_id, "frozen")
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "graph.run.completed",
+            {"project_stage": stage, "status": values.get("status", "")},
+            session_id=session_id,
+            stage=stage,
+        )
 
     except asyncio.CancelledError:
         logger.info("Graph run cancelled for %s", project_id)
         await update_project_status(project_id, "paused")
         await emit_status_update(project_id, status="paused", stage="intake", progress={})
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "graph.run.cancelled",
+            {"status": "paused"},
+            session_id=session_id,
+            stage="paused",
+        )
     except Exception:
         logger.exception("Graph run failed for %s", project_id)
+        await _cleanup_run_resources(project_id)
         await update_project_stage(project_id, "error")
         await update_project_status(project_id, "error")
         await emit_status_update(project_id, status="error", stage="error", progress={})
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "graph.run.failed",
+            {"status": "error"},
+            session_id=session_id,
+            stage="error",
+        )
     finally:
         await end_session(session_id)
         _active_runs.pop(project_id, None)
@@ -330,6 +474,13 @@ async def start_project(project_id: str) -> dict[str, str]:
 
     preflight = await preflight_service.run("start", project=project)
     if preflight.blocking:
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "preflight.failed",
+            preflight.to_dict(),
+            stage="planning",
+        )
         return {
             "status": "preflight_failed",
             "project_id": project_id,
@@ -353,6 +504,13 @@ async def start_project(project_id: str) -> dict[str, str]:
             )
         )
         _active_runs[project_id] = task
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "project.started",
+            {"mode": "resume", "project_stage": project_stage},
+            stage=project_stage,
+        )
         return {"status": "resumed", "project_id": project_id}
 
     initial_state: dict[str, Any] = {
@@ -408,6 +566,13 @@ async def start_project(project_id: str) -> dict[str, str]:
     await update_project_status(project_id, "planning")
     task = asyncio.create_task(_run_graph(project_id, initial_state=initial_state))
     _active_runs[project_id] = task
+    await trace_event(
+        project_id,
+        "orchestrator",
+        "project.started",
+        {"mode": "initial", "project_stage": "planning"},
+        stage="planning",
+    )
     return {"status": "started", "project_id": project_id}
 
 
@@ -455,6 +620,13 @@ async def resume_project(
         return {"status": "not_found", "project_id": project_id}
 
     await record_approval(project_id, approval_type, True, feedback=feedback)
+    await trace_event(
+        project_id,
+        "operator",
+        "approval.recorded",
+        {"approval_type": approval_type, "feedback": feedback, "approved": True},
+        stage=project.get("project_stage"),
+    )
     payload = {"approved": True, "feedback": feedback, "approval_type": approval_type}
     resume_state_patch = _build_resume_state_patch(project)
     task = asyncio.create_task(
@@ -477,6 +649,13 @@ async def deploy_project(project_id: str) -> dict[str, str]:
 
     preflight = await preflight_service.run("deploy", project=project)
     if preflight.blocking:
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "preflight.failed",
+            preflight.to_dict(),
+            stage="deploying",
+        )
         return {
             "status": "preflight_failed",
             "project_id": project_id,
@@ -495,6 +674,17 @@ async def deploy_project(project_id: str) -> dict[str, str]:
     await emit_status_update(project_id, status="deploying", stage="deploying", progress={})
 
     try:
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "deploy.started",
+            {
+                "repo_name": project.get("repo_name"),
+                "develop_branch": project.get("develop_branch") or "develop",
+                "default_branch": project.get("default_branch") or "main",
+            },
+            stage="deploying",
+        )
         deploy_sha = repository_manager.merge_branch(
             project_id,
             project.get("develop_branch") or "develop",
@@ -509,6 +699,13 @@ async def deploy_project(project_id: str) -> dict[str, str]:
         await update_project_cicd(project_id, deploy_commit_sha=deploy_sha, deploy_status="queued")
         await asyncio.sleep(2)
         sync_result = await sync_cicd_status(project_id)
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "deploy.queued",
+            {"deploy_commit_sha": deploy_sha, "sync_result": sync_result},
+            stage="deploying",
+        )
         return {
             "status": sync_result.get("deploy_status", "queued"),
             "project_id": project_id,
@@ -519,6 +716,13 @@ async def deploy_project(project_id: str) -> dict[str, str]:
         await update_project_status(project_id, "error")
         await update_project_deploy_status(project_id, "failed")
         await emit_status_update(project_id, status="error", stage="error", progress={})
+        await trace_event(
+            project_id,
+            "orchestrator",
+            "deploy.failed",
+            {"error": str(exc)},
+            stage="error",
+        )
         return {"status": "failed", "project_id": project_id}
 
 
