@@ -1,6 +1,12 @@
 """Tests for the Architect node (mocked LLM)."""
 
+from __future__ import annotations
+
+import pytest
+from langchain_core.messages import HumanMessage
+
 from orchestrator.execution_contract import extract_execution_contract, extract_plan_delta
+from orchestrator.graph.nodes import architect as architect_module
 from orchestrator.graph.nodes.architect import _extract_plan_md, _extract_stack_config
 
 
@@ -108,3 +114,49 @@ def test_extract_plan_delta():
     assert plan_delta is not None
     assert plan_delta["type"] == "plan_delta"
     assert plan_delta["changed_task_ids"] == ["task-001"]
+
+
+@pytest.mark.asyncio
+async def test_architect_falls_back_when_stream_returns_empty(monkeypatch):
+    async def fake_stream(*args, **kwargs):
+        if False:
+            yield ""
+
+    async def fake_call_llm(*args, **kwargs):
+        return SAMPLE_RESPONSE_WITH_PLAN
+
+    async def fake_save_chat_message(*args, **kwargs):
+        return None
+
+    async def fake_emit(*args, **kwargs):
+        return None
+
+    async def fake_trace_event(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(architect_module, "call_llm_streaming", fake_stream)
+    monkeypatch.setattr(architect_module, "call_llm", fake_call_llm)
+    monkeypatch.setattr(architect_module, "save_chat_message", fake_save_chat_message)
+    monkeypatch.setattr(architect_module, "emit_architect_chunk", fake_emit)
+    monkeypatch.setattr(architect_module, "emit_architect_message", fake_emit)
+    monkeypatch.setattr(architect_module, "emit_plan_updated", fake_emit)
+    monkeypatch.setattr(architect_module, "trace_event", fake_trace_event)
+
+    state = {
+        "project_id": "project-1",
+        "project_name": "MyApp",
+        "project_stage": "planning",
+        "messages": [HumanMessage(content="Build a dashboard")],
+        "intake_text": "Build a dashboard",
+        "llm_config": {
+            "architect": {"provider": "openai", "model": "gpt-5.3-codex"},
+            "builder": {"provider": "openai", "model": "gpt-5.3-codex"},
+            "reviewer": {"provider": "openai", "model": "gpt-5.3-codex"},
+        },
+    }
+
+    result = await architect_module.architect_node(state)
+
+    assert result["project_stage"] == "awaiting_plan_approval"
+    assert "plan_md" in result
+    assert result["execution_contract"]["task_graph"][0]["task_id"] == "task-001"

@@ -156,6 +156,23 @@ class RepositoryManager:
     async def get_remote_repository(self, repo_name: str) -> dict[str, Any] | None:
         return await self._get_repository(repo_name)
 
+    async def delete_remote_repository(self, repo_name: str) -> bool:
+        existing = await self._get_repository(repo_name)
+        if existing is None:
+            return False
+
+        async with httpx.AsyncClient(
+            base_url=settings.github_api_url,
+            headers=self._github_headers(),
+            timeout=30,
+        ) as client:
+            response = await client.delete(f"/repos/{settings.github_owner}/{repo_name}")
+            if response.status_code not in {204, 404}:
+                raise RuntimeError(
+                    f"GitHub repository deletion failed: {response.status_code} {response.text}"
+                )
+        return response.status_code == 204
+
     def initialize_workspace_repository(
         self,
         project_id: str,

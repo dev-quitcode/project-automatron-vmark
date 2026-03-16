@@ -278,6 +278,127 @@ Suggested owner tags:
     separately
   - session records are useful as a first-line debugging surface
 
+### B-030 Fix plan artifact serialization/rendering in the operator UI
+
+- Area: `UI/API`
+- Problem:
+  - generated planning artifacts are reaching the operator UI in a partially
+    object-shaped form, and the plan renderer shows broken lines like:
+    - `,[object Object],: Confirm pre-scaffolded app is usable...`
+  - this makes the plan-approval gate unreliable because the operator cannot
+    trust the visual rendering of task title, description, and context
+  - the defect may sit in one or more boundaries:
+    - architect artifact parsing
+    - `PLAN.md` normalization
+    - API DTO serialization
+    - frontend plan parsing/rendering
+- Work:
+  - trace the full artifact path:
+    - raw architect response
+    - parsed `PLAN.md`
+    - persisted `plan_md`
+    - project API response
+    - frontend rendered task list
+  - ensure operator-facing plan rendering uses a deterministic typed shape
+    rather than interpolating raw objects into strings
+  - add regression coverage for:
+    - markdown task lines with context blocks
+    - mixed-language plan content
+    - execution-contract-derived task metadata shown in the UI
+  - add a safe fallback in the UI that shows raw `PLAN.md` if structured plan
+    rendering fails
+- Done when:
+  - plan approval UI renders tasks and context without `object Object`
+    artifacts
+  - operator can reliably review either parsed plan data or raw markdown
+    without information loss
+
+### B-031 Handle empty LLM streaming responses deterministically
+
+- Area: `Platform`
+- Problem:
+  - `gpt-5.3-codex` planning runs produced `llm.stream.completed` with:
+    - `response=""`
+    - `chunk_count=0`
+  - the orchestrator treated that as a normal architect completion and the run
+    fell into `graph.run.failed` before any planning artifacts were persisted
+- Work:
+  - treat empty streaming output as an invalid result, not a successful call
+  - automatically fall back to a non-streaming architect call when the stream
+    yields zero content
+  - if fallback is also empty, raise a precise planning error instead of a
+    generic graph failure
+  - add regression tests for `stream success with zero chunks`
+- Done when:
+  - architect planning does not fail silently on empty streamed responses
+  - planning either produces artifacts or a precise typed error
+
+### B-032 Surface provider quota exhaustion as a typed preflight/runtime failure
+
+- Area: `Platform`
+- Problem:
+  - after the empty-stream fallback was fixed, planning still failed because the
+    fallback call hit:
+    - `OpenAIException`
+    - `code=insufficient_quota`
+  - the run ended as a generic `graph.run.failed`, which is too coarse for the
+    operator and too late in the lifecycle
+- Work:
+  - detect provider quota/billing failures and map them to a typed operator-facing
+    error
+  - optionally add a lightweight provider readiness probe before expensive runs
+  - expose the failure in project summary/UI as `provider_quota_exhausted`
+    instead of only in trace
+- Done when:
+  - quota exhaustion is immediately obvious from the project status surface
+  - operators do not need trace inspection to distinguish quota issues from
+    platform bugs
+
+### B-033 Fix preview startup when PID file is missing
+
+- Area: `Platform`
+- Problem:
+  - after all build tasks completed, `preview_check` crashed because
+    `start_preview_process()` treated `/tmp/automatron-preview.pid` as mandatory
+  - if the preview process starts but the PID file is not written, the graph
+    fails even though readiness probe could still verify a healthy preview
+- Work:
+  - make PID file optional during preview startup
+  - capture PID from process stdout when possible
+  - fall back to readiness probe and preview log diagnostics if PID file is
+    absent
+  - return a structured preview startup error instead of generic graph failure
+- Done when:
+  - missing PID file no longer crashes preview startup by itself
+  - preview readiness is determined by probe success, not only by PID file
+
+### B-034 Fix Prisma client layout for preview on mounted workspaces
+
+- Area: `Platform`
+- Problem:
+  - in the live Next.js + Prisma preview flow, `@prisma/client/default.js`
+    resolved `.prisma/client/default` relative to `node_modules/@prisma/client`
+    while the generated client existed only in `node_modules/.prisma/client`
+  - this caused app routes like `/dashboard`, `/customers`, `/invoices`, and
+    `/invoices/new` to return `500` even though `/api/health` could remain
+    healthy
+  - current validation allowed the project to reach preview without catching
+    this runtime layout incompatibility
+- Work:
+  - make Prisma preview/runtime setup explicitly materialize the generated
+    client where `@prisma/client` expects it
+  - validate Prisma client import using the same installed layout as preview
+  - add regression coverage for Next.js + Prisma preview startup on mounted
+    workspaces
+  - tighten final validation so broken Prisma client layout cannot pass preview
+    readiness
+- Done when:
+  - Next.js + Prisma preview routes return `200` after a clean preview start on
+    the mounted workspace
+  - preview no longer requires manual `.prisma/client` copy/symlink repair
+  - reviewer/validator catches broken Prisma runtime layout before preview
+    approval
+
 ## Before Next E2E
 
 ### B-009 Introduce explicit `awaiting_clarification` stage

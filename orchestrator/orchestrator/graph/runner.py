@@ -316,6 +316,13 @@ async def _cleanup_run_resources(project_id: str) -> None:
     if not project:
         return
 
+    repo_name = str(project.get("repo_name", "") or "").strip()
+    if repo_name:
+        try:
+            await repository_manager.delete_remote_repository(repo_name)
+        except Exception:
+            logger.exception("Failed to delete remote repository during cleanup for %s", project_id)
+
     container_id = project.get("container_id")
     if container_id:
         await container_manager.remove_container(container_id)
@@ -774,10 +781,12 @@ async def restart_preview(project_id: str) -> dict[str, Any]:
         "probe_path": validation_result.runtime_spec.readiness_path,
     }
     await update_project_preview(project_id, preview_url, "healthy", metadata)
+    await update_project_stage(project_id, "awaiting_preview_approval")
+    await update_project_status(project_id, "preview")
     await emit_status_update(
         project_id,
-        status=project.get("status", "preview"),
-        stage=project.get("project_stage", "awaiting_preview_approval"),
+        status="preview",
+        stage="awaiting_preview_approval",
         progress={},
         preview_url=preview_url,
     )

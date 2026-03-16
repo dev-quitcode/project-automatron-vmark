@@ -62,7 +62,7 @@ global_rules:
   "orm": "ORM name",
   "port": 3000,
   "package_manager": "npm|pnpm|yarn|pip",
-  "init_script": "init-framework.sh"
+  "init_script": "init-nextjs.sh"
 }
 ```
 

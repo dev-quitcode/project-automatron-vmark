@@ -55,6 +55,8 @@ def provider_api_key(provider: str) -> str:
 
 def builder_auth_provider(provider: str) -> str:
     selected_provider = normalize_provider(provider)
+    if selected_provider == "openai":
+        return "openai-native"
     return "gemini" if selected_provider == "google" else selected_provider
 
 

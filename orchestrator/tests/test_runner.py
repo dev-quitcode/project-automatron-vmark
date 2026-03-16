@@ -204,3 +204,75 @@ async def test_get_task_status_uses_execution_contract(monkeypatch):
     assert result["completed_tasks"] == 1
     assert result["total_tasks"] == 2
     assert result["task_attempt_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_restart_preview_updates_stage_and_status(monkeypatch):
+    stage_calls: list[str] = []
+    status_calls: list[str] = []
+    preview_updates: list[tuple[str, str, str, dict[str, object]]] = []
+    emitted: list[dict[str, object]] = []
+
+    async def fake_get_project(project_id: str) -> dict[str, object]:
+        return {
+            "id": project_id,
+            "container_id": "container-1",
+            "port": 7001,
+            "stack_config": {"port": 3000},
+            "preview_url": "",
+            "status": "building",
+            "project_stage": "building",
+        }
+
+    class _RuntimeSpec:
+        readiness_path = "/api/health"
+
+    class _ValidationResult:
+        blocking_issues: list[object] = []
+        runtime_spec = _RuntimeSpec()
+
+    async def fake_validate(*args, **kwargs):
+        return _ValidationResult()
+
+    async def fake_start_preview(*args, **kwargs):
+        return {"pid": "123"}
+
+    async def fake_wait_for_preview(*args, **kwargs):
+        return None
+
+    async def fake_update_preview(project_id: str, url: str, status: str, metadata: dict[str, object]) -> None:
+        preview_updates.append((project_id, url, status, metadata))
+
+    async def fake_update_stage(project_id: str, stage: str) -> None:
+        stage_calls.append(stage)
+
+    async def fake_update_status(project_id: str, status: str) -> None:
+        status_calls.append(status)
+
+    async def fake_emit_status_update(project_id: str, **payload) -> None:
+        emitted.append({"project_id": project_id, **payload})
+
+    monkeypatch.setattr(runner, "get_project", fake_get_project)
+    monkeypatch.setattr(runner, "validate_workspace_contract_async", fake_validate)
+    monkeypatch.setattr(runner.container_manager, "start_preview_process", fake_start_preview)
+    monkeypatch.setattr(runner.container_manager, "wait_for_preview", fake_wait_for_preview)
+    monkeypatch.setattr(runner, "update_project_preview", fake_update_preview)
+    monkeypatch.setattr(runner, "update_project_stage", fake_update_stage)
+    monkeypatch.setattr(runner, "update_project_status", fake_update_status)
+    monkeypatch.setattr(runner, "emit_status_update", fake_emit_status_update)
+
+    result = await runner.restart_preview("project-1")
+
+    assert result["status"] == "restarted"
+    assert preview_updates
+    assert stage_calls == ["awaiting_preview_approval"]
+    assert status_calls == ["preview"]
+    assert emitted == [
+        {
+            "project_id": "project-1",
+            "status": "preview",
+            "stage": "awaiting_preview_approval",
+            "progress": {},
+            "preview_url": "http://localhost:7001",
+        }
+    ]

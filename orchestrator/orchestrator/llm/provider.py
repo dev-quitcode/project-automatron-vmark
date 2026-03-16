@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 litellm.set_verbose = False
 
 
+def _completion_kwargs(model: str, *, temperature: float, max_tokens: int, stream: bool = False) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+    }
+    normalized = (model or "").strip().lower()
+    # GPT-5 Codex variants reject non-default temperature values; use the provider-supported value.
+    if normalized.startswith("gpt-5"):
+        kwargs["temperature"] = 1
+    else:
+        kwargs["temperature"] = temperature
+    if stream:
+        kwargs["stream"] = True
+    return kwargs
+
+
 def _messages_to_dicts(messages: list[AnyMessage]) -> list[dict[str, str]]:
     """Convert LangChain messages to litellm dict format."""
     result = []
@@ -73,11 +89,14 @@ async def call_llm(
         )
 
     try:
-        response = await litellm.acompletion(
-            model=model,
-            messages=msg_dicts,
+        request_kwargs = _completion_kwargs(
+            model,
             temperature=temperature,
             max_tokens=max_tokens,
+        )
+        response = await litellm.acompletion(
+            messages=msg_dicts,
+            **request_kwargs,
         )
         content = response.choices[0].message.content or ""
 
@@ -163,12 +182,15 @@ async def call_llm_streaming(
         )
 
     try:
-        response = await litellm.acompletion(
-            model=model,
-            messages=msg_dicts,
+        request_kwargs = _completion_kwargs(
+            model,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+        )
+        response = await litellm.acompletion(
+            messages=msg_dicts,
+            **request_kwargs,
         )
 
         collected_chunks: list[str] = []

@@ -42,7 +42,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN npm install -g pnpm
 
 # ── Cline CLI ───────────────────────────────────────────────
-RUN npm install -g cline
+RUN npm install -g cline@2.7.0
 
 # ── Create non-privileged user ──────────────────────────────
 RUN if getent passwd 1000 >/dev/null; then \

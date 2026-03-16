@@ -36,12 +36,11 @@ def resolve_preview_runtime_spec(
 
     if (workspace_path / "next.config.js").exists() or (workspace_path / "next.config.ts").exists():
         package_manager = _detect_package_manager(workspace_path)
+        uses_prisma = "prisma" in stack_text or (workspace_path / "prisma" / "schema.prisma").exists()
         return PreviewRuntimeSpec(
-            stack="nextjs-prisma-sqlite-tailwind"
-            if "prisma" in stack_text or (workspace_path / "prisma" / "schema.prisma").exists()
-            else "nextjs",
+            stack="nextjs-prisma-sqlite-tailwind" if uses_prisma else "nextjs",
             package_manager=package_manager,
-            install_command=_install_command(package_manager),
+            install_command=_install_command(package_manager, needs_prisma_generate=uses_prisma),
             preview_command_template=_node_preview_command(package_manager, nextjs=True),
             cache_dirs=(".next",),
             readiness_path="/api/health",
@@ -89,14 +88,20 @@ def _detect_package_manager(workspace_path: Path) -> str:
     return "npm"
 
 
-def _install_command(package_manager: str) -> str:
+def _install_command(package_manager: str, *, needs_prisma_generate: bool = False) -> str:
     if package_manager == "pnpm":
-        return "pnpm install"
-    if package_manager == "yarn":
-        return "yarn install --frozen-lockfile || yarn install"
-    if package_manager == "npm":
-        return "npm ci || npm install"
-    return "true"
+        base = "pnpm install"
+    elif package_manager == "yarn":
+        base = "yarn install --frozen-lockfile || yarn install"
+    elif package_manager == "npm":
+        base = "npm ci || npm install"
+    else:
+        base = "true"
+
+    if needs_prisma_generate:
+        return f"{base} && {_prisma_generate_command()}"
+
+    return base
 
 
 def _node_preview_command(package_manager: str, *, nextjs: bool) -> str:
@@ -134,4 +139,13 @@ def _prisma_smoke_command() -> str:
         ".then(() => process.exit(0))"
         ".catch((error) => { console.error(error); process.exit(1); });"
         "\""
+    )
+
+
+def _prisma_generate_command() -> str:
+    return (
+        "npx prisma generate"
+        " && mkdir -p node_modules/@prisma/client/.prisma"
+        " && rm -rf node_modules/@prisma/client/.prisma/client"
+        " && cp -R node_modules/.prisma/client node_modules/@prisma/client/.prisma/client"
     )

@@ -113,3 +113,29 @@ def test_resolve_init_script_ignores_raw_command_and_uses_platform_script():
         )
         == "init-nextjs.sh"
     )
+
+
+def test_resolve_init_script_maps_known_nextjs_aliases():
+    assert (
+        _resolve_init_script(
+            {
+                "stack": "nextjs-prisma-sqlite-tailwind",
+                "framework": "Next.js 15 (App Router, TypeScript)",
+                "init_script": "init-nextjs-app-router.sh",
+            }
+        )
+        == "init-nextjs.sh"
+    )
+
+
+def test_resolve_init_script_maps_generic_placeholder_to_known_script():
+    assert (
+        _resolve_init_script(
+            {
+                "stack": "nextjs-invoice-mvp",
+                "framework": "Next.js 15 (App Router)",
+                "init_script": "init-framework.sh",
+            }
+        )
+        == "init-generic.sh"
+    )

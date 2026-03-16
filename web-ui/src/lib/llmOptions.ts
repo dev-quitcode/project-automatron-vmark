@@ -9,15 +9,15 @@ export const llmProviders: { value: LlmProvider; label: string }[] = [
 export const defaultProjectLlmConfig: ProjectLlmConfig = {
   architect: {
     provider: "openai",
-    model: "gpt-4.1",
+    model: "gpt-5.3-codex",
   },
   builder: {
     provider: "openai",
-    model: "gpt-4.1-mini",
+    model: "gpt-5.3-codex",
   },
   reviewer: {
     provider: "openai",
-    model: "gpt-4.1-mini",
+    model: "gpt-5.3-codex",
   },
 };
 

@@ -179,6 +179,27 @@ async def architect_node(state: AutomatronState) -> dict:
             )
         ]
     response_text = "".join(response_chunks)
+    if not response_text.strip():
+        logger.warning("Architect returned empty streaming response, falling back to non-streaming")
+        await trace_event(
+            project_id,
+            "architect",
+            "architect.stream.empty_fallback",
+            {"model": architect_model},
+            session_id=state.get("session_id"),
+            stage=state.get("project_stage"),
+        )
+        response_text = await call_llm(
+            messages,
+            model=architect_model,
+            trace_context={
+                "project_id": project_id,
+                "session_id": state.get("session_id"),
+                "actor": "architect",
+                "stage": state.get("project_stage"),
+                "prompt_name": "architect_v1_empty_stream_fallback",
+            },
+        )
     new_plan_md = _extract_plan_md(response_text)
     stack_config = _extract_stack_config(response_text)
     execution_contract = extract_execution_contract(response_text)
@@ -203,6 +224,9 @@ async def architect_node(state: AutomatronState) -> dict:
         )
     else:
         execution_contract = execution_contract or state.get("execution_contract", {})
+
+    if not response_text.strip():
+        raise RuntimeError("Architect returned an empty response after fallback repair")
 
     contract_version = int(state.get("contract_version", 0) or 0) + 1
     decision_log = execution_contract.get("decision_log", state.get("decision_log", [])) if execution_contract else state.get("decision_log", [])

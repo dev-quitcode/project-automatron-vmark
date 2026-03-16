@@ -31,6 +31,14 @@ container_manager = ContainerManager()
 port_allocator = PortAllocator(start=settings.port_range_start, end=settings.port_range_end)
 repository_manager = RepositoryManager()
 
+INIT_SCRIPT_ALIASES = {
+    "init-framework.sh": "init-generic.sh",
+    "init-nextjs-app-router.sh": "init-nextjs.sh",
+    "init-nextjs-app.sh": "init-nextjs.sh",
+    "init-nextjs-typescript.sh": "init-nextjs.sh",
+    "init-vite-react.sh": "init-react-vite.sh",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -38,7 +46,14 @@ def _now() -> str:
 
 def _resolve_init_script(stack_config: dict) -> str:
     configured = str(stack_config.get("init_script", "") or "").strip()
-    if configured.endswith(".sh") and "/" not in configured and "\\" not in configured and " " not in configured:
+    configured = INIT_SCRIPT_ALIASES.get(configured, configured)
+    known_scripts = set(INIT_SCRIPT_ALIASES.values()) | {
+        "init-nextjs.sh",
+        "init-react-vite.sh",
+        "init-python.sh",
+        "init-generic.sh",
+    }
+    if configured in known_scripts:
         return configured
 
     stack_text = " ".join(
@@ -137,6 +152,7 @@ async def scaffold_node(state: AutomatronState) -> dict:
     )
 
     init_script = _resolve_init_script(stack_config)
+    init_timeout = 900 if init_script == "init-nextjs.sh" else 300
     llm_config = normalize_llm_config(state.get("llm_config") or default_llm_config())
     builder_provider = llm_config["builder"]["provider"]
     builder_model = llm_config["builder"]["model"]
@@ -147,6 +163,7 @@ async def scaffold_node(state: AutomatronState) -> dict:
         "scaffold.bootstrap.started",
         {
             "init_script": init_script,
+            "timeout_seconds": init_timeout,
             "stack": stack_config.get("stack", ""),
             "framework": stack_config.get("framework", ""),
         },
@@ -157,7 +174,7 @@ async def scaffold_node(state: AutomatronState) -> dict:
         init_result = await container_manager.exec_in_container(
             container_info.container_id,
             f"bash {script_path}",
-            timeout=180,
+            timeout=init_timeout,
         )
         if init_result.exit_code != 0:
             raise RuntimeError(

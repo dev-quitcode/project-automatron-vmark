@@ -28,13 +28,13 @@ class Settings(BaseSettings):
     git_author_email: str = "automatron@example.local"
 
     # --- Architect ---
-    architect_model: str = "claude-opus-4-20250918"
+    architect_model: str = "gpt-5.3-codex"
     architect_prompt_version: str = "v1"
 
     # --- Builder ---
-    builder_model: str = "anthropic/claude-sonnet-4-20250514"
+    builder_model: str = "gpt-5.3-codex"
     builder_cline_timeout: int = 900
-    reviewer_model: str = "gpt-4.1-mini"
+    reviewer_model: str = "gpt-5.3-codex"
 
     # --- Docker ---
     golden_image: str = "automatron/golden:latest"
@@ -73,6 +73,26 @@ class Settings(BaseSettings):
         path = Path(self.sqlite_db_path).parent
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @classmethod
+    def _project_root(cls) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    @field_validator("sqlite_db_path", "checkpoint_db_path", mode="before")
+    @classmethod
+    def _normalize_sqlite_paths(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        raw = value.strip()
+        if not raw:
+            return value
+        path = Path(raw)
+        if path.is_absolute():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return str(path)
+        normalized = (cls._project_root() / path).resolve()
+        normalized.parent.mkdir(parents=True, exist_ok=True)
+        return str(normalized)
 
     @property
     def workspace_base_dir(self) -> Path:

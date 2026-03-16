@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.docker_engine.manager import ExecResult
+from orchestrator.validation.runtime import resolve_preview_runtime_spec
 from orchestrator.validation.workspace import (
+    _render_container_command,
     should_validate_release_artifacts,
     validate_workspace_contract,
     validate_workspace_contract_async,
@@ -138,6 +140,39 @@ def test_should_validate_release_artifacts_only_on_late_or_deploy_tasks():
     )
 
 
+def test_nextjs_prisma_runtime_spec_generates_prisma_client_on_install(tmp_path):
+    workspace = tmp_path
+    (workspace / "next.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (workspace / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (workspace / "prisma").mkdir(parents=True, exist_ok=True)
+    (workspace / "prisma" / "schema.prisma").write_text(
+        "datasource db { provider = \"sqlite\" url = env(\"DATABASE_URL\") }\n"
+        "generator client { provider = \"prisma-client-js\" }\n"
+        "model Invoice { id String @id }\n",
+        encoding="utf-8",
+    )
+
+    spec = resolve_preview_runtime_spec(workspace, {"framework": "nextjs", "database": "prisma"})
+
+    assert spec.install_command == (
+        "npm ci || npm install && npx prisma generate"
+        " && mkdir -p node_modules/@prisma/client/.prisma"
+        " && rm -rf node_modules/@prisma/client/.prisma/client"
+        " && cp -R node_modules/.prisma/client node_modules/@prisma/client/.prisma/client"
+    )
+    assert spec.readiness_path == "/api/health"
+
+
+def test_render_container_command_materializes_node_eval_scripts():
+    rendered = _render_container_command(
+        'node -e "const x = 1; Promise.resolve(client.$disconnect()).then(() => process.exit(0));"'
+    )
+
+    assert "cat > /workspace/.automatron-validate-" in rendered
+    assert "node /workspace/.automatron-validate-" in rendered
+    assert "client.$disconnect()" in rendered
+
+
 @pytest.mark.asyncio
 async def test_validate_workspace_contract_async_runs_heavy_checks(tmp_path):
     workspace = tmp_path
@@ -162,3 +197,30 @@ async def test_validate_workspace_contract_async_runs_heavy_checks(tmp_path):
     codes = {issue.code for issue in result.blocking_issues}
     assert "heavy_build_failed" in codes
     assert "heavy_prisma_import_failed" in codes
+
+
+@pytest.mark.asyncio
+async def test_validate_workspace_contract_async_materializes_prisma_node_eval(tmp_path):
+    workspace = tmp_path
+    _write_valid_nextjs_workspace(workspace)
+
+    captured_commands: list[str] = []
+
+    class _FakeContainerManager:
+        async def exec_in_container(self, container_id: str, command: str, timeout: int = 300) -> ExecResult:
+            captured_commands.append(command)
+            return ExecResult(exit_code=0, output="ok")
+
+    result = await validate_workspace_contract_async(
+        workspace,
+        stack_config={"framework": "nextjs", "database": "prisma"},
+        container_manager=_FakeContainerManager(),
+        container_id="container-1",
+        require_heavy_checks=True,
+    )
+
+    assert result.ok
+    prisma_commands = [command for command in captured_commands if "automatron-validate-" in command]
+    assert prisma_commands
+    assert "/workspace/.automatron-validate-" in prisma_commands[-1]
+    assert "client.$disconnect()" in prisma_commands[-1]

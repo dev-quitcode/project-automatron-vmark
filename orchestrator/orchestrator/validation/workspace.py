@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -248,6 +250,38 @@ def _validate_nextjs_contract(
     return issues
 
 
+def _render_container_command(command: str) -> str:
+    """Render shell-safe commands for nested bash execution in containers.
+
+    In particular, `node -e "..."` scripts may contain `$disconnect()` and
+    similar identifiers that get mangled by shell interpolation if passed
+    through multiple shell layers directly.
+    """
+
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return command
+
+    if len(argv) >= 3 and argv[0] == "node" and argv[1] == "-e":
+        script = argv[2]
+        # Materialize the script under /workspace so Node resolves project
+        # dependencies like @prisma/client using the generated app's tree
+        # instead of /tmp, which breaks module resolution for smoke checks.
+        script_path = f"/workspace/.automatron-validate-{uuid.uuid4().hex}.js"
+        return (
+            f"cat > {script_path} <<'__AUTOMATRON_NODE__'\n"
+            f"{script}\n"
+            "__AUTOMATRON_NODE__\n"
+            f"node {script_path}; "
+            "EXIT_CODE=$?; "
+            f"rm -f {script_path}; "
+            "exit $EXIT_CODE"
+        )
+
+    return command
+
+
 async def run_heavy_checks_async(
     container_manager: Any,
     container_id: str,
@@ -258,9 +292,10 @@ async def run_heavy_checks_async(
     issues: list[ValidationIssue] = []
 
     if runtime_spec.build_command:
+        rendered_build_command = _render_container_command(runtime_spec.build_command)
         build_result = await container_manager.exec_in_container(
             container_id,
-            f"cd /workspace && {runtime_spec.build_command}",
+            f"cd /workspace && {rendered_build_command}",
             timeout=360,
         )
         if build_result.exit_code != 0:
@@ -273,9 +308,10 @@ async def run_heavy_checks_async(
             )
 
     if require_prisma and runtime_spec.prisma_smoke_command:
+        rendered_prisma_command = _render_container_command(runtime_spec.prisma_smoke_command)
         prisma_result = await container_manager.exec_in_container(
             container_id,
-            f"cd /workspace && {runtime_spec.prisma_smoke_command}",
+            f"cd /workspace && {rendered_prisma_command}",
             timeout=120,
         )
         if prisma_result.exit_code != 0:

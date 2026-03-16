@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import shlex
 import tarfile
 from dataclasses import dataclass
@@ -352,14 +353,26 @@ class ContainerManager:
     ) -> dict[str, str]:
         spec = runtime_spec or resolve_preview_runtime_spec(workspace_path, stack_config)
         command = f"{spec.install_command} && {spec.render_preview_command(internal_port)}"
-        cleanup_command = self._preview_cleanup_command(spec)
+        cleanup_command = self._preview_cleanup_command(spec, internal_port)
         wrapped_command = (
             f"{cleanup_command} "
             f"&& nohup bash -lc {self._quote_for_bash(command)} "
-            "> /tmp/automatron-preview.log 2>&1 & echo $! > /tmp/automatron-preview.pid"
+            "> /tmp/automatron-preview.log 2>&1 & "
+            "PID=$!; "
+            "echo $PID > /tmp/automatron-preview.pid 2>/dev/null || true; "
+            "echo $PID"
         )
-        await self.exec_in_container(container_id, wrapped_command, timeout=20)
-        pid = (await self.read_file_from_container(container_id, "/tmp/automatron-preview.pid")).strip()
+        exec_result = await self.exec_in_container(container_id, wrapped_command, timeout=20)
+        pid = self._extract_preview_pid(exec_result.output)
+        pid_file_present = False
+        if not pid:
+            try:
+                pid = (await self.read_file_from_container(container_id, "/tmp/automatron-preview.pid")).strip()
+                pid_file_present = bool(pid)
+            except RuntimeError:
+                pid = ""
+        else:
+            pid_file_present = True
         metadata = {
             "pid": pid,
             "command": command,
@@ -367,6 +380,8 @@ class ContainerManager:
             "restart_reason": restart_reason,
             "probe_url": spec.probe_url(internal_port),
             "runtime_stack": spec.stack,
+            "pid_file_present": "true" if pid_file_present else "false",
+            "startup_output": exec_result.output[-1000:],
         }
         logger.info(
             "Started preview process for %s on %d (host %d)",
@@ -403,17 +418,32 @@ class ContainerManager:
         return f'"{escaped}"'
 
     @staticmethod
-    def _preview_cleanup_command(runtime_spec: PreviewRuntimeSpec) -> str:
-        cache_cleanup = " ".join(f"rm -rf /workspace/{cache_dir};" for cache_dir in runtime_spec.cache_dirs)
-        return (
-            "if [ -f /tmp/automatron-preview.pid ]; then "
-            "PID=$(cat /tmp/automatron-preview.pid); "
-            "kill \"$PID\" >/dev/null 2>&1 || true; "
-            "wait \"$PID\" >/dev/null 2>&1 || true; "
-            "fi; "
-            "rm -f /tmp/automatron-preview.pid /tmp/automatron-preview.log; "
-            f"{cache_cleanup}"
-        )
+    def _preview_cleanup_command(runtime_spec: PreviewRuntimeSpec, internal_port: int) -> str:
+        commands = [
+            "if [ -f /tmp/automatron-preview.pid ]; then PID=$(cat /tmp/automatron-preview.pid); kill \"$PID\" >/dev/null 2>&1 || true; wait \"$PID\" >/dev/null 2>&1 || true; fi",
+            "rm -f /tmp/automatron-preview.pid /tmp/automatron-preview.log",
+        ]
+        commands.extend(ContainerManager._preview_process_kill_commands(runtime_spec, internal_port))
+        commands.extend(f"rm -rf /workspace/{cache_dir}" for cache_dir in runtime_spec.cache_dirs)
+        return "; ".join(command for command in commands if command)
+
+    @staticmethod
+    def _extract_preview_pid(output: str) -> str:
+        for line in reversed((output or "").splitlines()):
+            candidate = line.strip()
+            if re.fullmatch(r"\d+", candidate):
+                return candidate
+        return ""
+
+    @staticmethod
+    def _preview_process_kill_commands(runtime_spec: PreviewRuntimeSpec, internal_port: int) -> list[str]:
+        if runtime_spec.stack.startswith("nextjs"):
+            return [
+                f"pkill -f 'next dev --hostname 0.0.0.0 --port {internal_port}' >/dev/null 2>&1 || true",
+                f"pkill -f 'npm run dev -- --hostname 0.0.0.0 --port {internal_port}' >/dev/null 2>&1 || true",
+                f"pkill -f 'next start --port {internal_port}' >/dev/null 2>&1 || true",
+            ]
+        return []
 
 
 def _now() -> str:
