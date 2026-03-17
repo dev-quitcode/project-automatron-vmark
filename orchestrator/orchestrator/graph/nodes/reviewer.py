@@ -208,6 +208,10 @@ async def status_classifier_node(state: AutomatronState) -> dict:
                 workspace_plan.write_text(updated_plan, encoding="utf-8")
             except Exception as exc:
                 logger.warning("Failed to mark task %d complete in PLAN.md: %s", task_index, exc)
+        _update_stories_status(
+            workspace=repository_manager.workspace_path(state["project_id"]),
+            task_id=task_id,
+        )
         commit_message = f"builder: task {task_index + 1} {task_text.splitlines()[0][:72]}"
         try:
             repository_manager.commit_workspace_changes(
@@ -217,6 +221,26 @@ async def status_classifier_node(state: AutomatronState) -> dict:
             )
         except Exception as exc:
             logger.warning("Failed to commit task %d changes: %s", task_index, exc)
+
+    _append_learning(
+        workspace=repository_manager.workspace_path(state["project_id"]),
+        task_id=task_id,
+        task_text=task_text,
+        status=status,
+        attempt_count=current_attempt,
+        reason=reason,
+        duration_s=float(state.get("builder_duration_s", 0) or 0),
+    )
+
+    # On escalation: if the architect updated the architecture doc, write it to disk.
+    updated_architecture_md = state.get("architecture_md", "")
+    if updated_architecture_md and task_validation_result.get("escalate"):
+        try:
+            arch_path = repository_manager.workspace_path(state["project_id"]) / "docs" / "ARCHITECTURE.md"
+            if arch_path.exists():
+                arch_path.write_text(updated_architecture_md.strip() + "\n", encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to update ARCHITECTURE.md: %s", exc)
     else:
         next_attempt_count = current_attempt + 1
         repairable_failure = _reason_is_repairable(reason, builder_output, builder_error)
@@ -395,6 +419,56 @@ def _build_escalation_request(
         "validation_result": validation_result,
         "recommended_option": "Return a targeted architect plan delta for this task.",
     }
+
+def _append_learning(
+    *,
+    workspace: "Path",
+    task_id: str,
+    task_text: str,
+    status: str,
+    attempt_count: int,
+    reason: str,
+    duration_s: float,
+) -> None:
+    """Append a learning entry to docs/LEARNINGS.md. Never raises — failures are logged."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    learnings_path = Path(workspace) / "docs" / "LEARNINGS.md"
+    if not learnings_path.parent.exists():
+        return
+    try:
+        first_line = task_text.splitlines()[0][:80] if task_text else task_id
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = (
+            f"\n## {task_id}: {first_line} ({timestamp})\n"
+            f"- **Status:** {status}\n"
+            f"- **Attempt:** {attempt_count + 1}\n"
+            f"- **Duration:** {duration_s:.0f}s\n"
+            f"- **Notes:** {reason[:300] if reason else 'n/a'}\n"
+        )
+        existing = learnings_path.read_text(encoding="utf-8") if learnings_path.exists() else "# Learnings\n"
+        learnings_path.write_text(existing.rstrip() + "\n" + entry, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to append to LEARNINGS.md: %s", exc)
+
+
+def _update_stories_status(*, workspace: "Path", task_id: str) -> None:
+    """Mark a task as completed in docs/STORIES.md using checkbox replacement. Never raises."""
+    from pathlib import Path
+
+    stories_path = Path(workspace) / "docs" / "STORIES.md"
+    if not stories_path.exists():
+        return
+    try:
+        content = stories_path.read_text(encoding="utf-8")
+        # Match lines like: - [ ] `task-001` ...  or  - [ ] `task-001-abc123` ...
+        updated = content.replace(f"- [ ] `{task_id}`", f"- [x] `{task_id}`")
+        if updated != content:
+            stories_path.write_text(updated, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to update STORIES.md for %s: %s", task_id, exc)
+
 
 def _parse_classification(response: str) -> dict[str, str]:
     try:

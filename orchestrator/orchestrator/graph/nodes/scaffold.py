@@ -230,6 +230,13 @@ async def scaffold_node(state: AutomatronState) -> dict:
             logger.warning("Cline auth setup failed: %s", exc)
 
     repository_manager.ensure_deploy_supporting_docs(project_id, state["project_name"])
+    _write_project_docs(
+        workspace=repository_manager.workspace_path(project_id),
+        project_name=state["project_name"],
+        prd_md=state.get("prd_md", ""),
+        architecture_md=state.get("architecture_md", ""),
+        stories_md=state.get("stories_md", ""),
+    )
     repository_manager.initialize_workspace_repository(
         project_id,
         state["project_name"],
@@ -505,6 +512,64 @@ def repository_manager_metadata_from_state(state: AutomatronState):
         develop_branch=state.get("develop_branch", "develop"),
         feature_branch=state.get("feature_branch", "feature/1-project"),
     )
+
+
+def _write_project_docs(
+    *,
+    workspace: "Path",
+    project_name: str,
+    prd_md: str,
+    architecture_md: str,
+    stories_md: str,
+) -> None:
+    """Write docs/ skeleton to the workspace before the initial git commit.
+
+    Files are only written if they do not already exist (idempotent). Falls back
+    to minimal placeholder content when the architect did not produce a block.
+    """
+    from pathlib import Path
+
+    docs_dir = workspace / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    prd_path = docs_dir / "PRD.md"
+    if not prd_path.exists():
+        content = prd_md.strip() if prd_md else (
+            f"# PRD: {project_name}\n\n"
+            "## Why\n_To be filled in._\n\n"
+            "## Scope (MVP)\n**In:** _To be filled in._\n**Out:** _To be filled in._\n\n"
+            "## Success Criteria\n- [ ] Project builds and deploys successfully.\n"
+        )
+        prd_path.write_text(content + "\n", encoding="utf-8")
+
+    arch_path = docs_dir / "ARCHITECTURE.md"
+    if not arch_path.exists():
+        content = architecture_md.strip() if architecture_md else (
+            f"# Architecture: {project_name}\n\n"
+            "## Stack\n_To be filled in by the architect._\n\n"
+            "## Key Design Decisions\n_To be filled in._\n\n"
+            "## Component Map\n_To be filled in._\n\n"
+            "## Data Flow\n_To be filled in._\n"
+        )
+        arch_path.write_text(content + "\n", encoding="utf-8")
+
+    stories_path = docs_dir / "STORIES.md"
+    if not stories_path.exists():
+        content = stories_md.strip() if stories_md else (
+            "# Stories\n\n"
+            "## Epic: Implementation\n"
+            "### Story: Project Build\n"
+            "_Stories will be populated from the execution plan._\n"
+        )
+        stories_path.write_text(content + "\n", encoding="utf-8")
+
+    learnings_path = docs_dir / "LEARNINGS.md"
+    if not learnings_path.exists():
+        learnings_path.write_text(
+            "# Learnings\n\n"
+            "_Accumulated after each task execution. Updated automatically by the orchestrator._\n",
+            encoding="utf-8",
+        )
 
 
 def _extract_task_index(task_id: str) -> int:

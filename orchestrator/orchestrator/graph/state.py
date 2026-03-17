@@ -71,6 +71,9 @@ class AutomatronState(TypedDict, total=False):
     session_id: str
 
     plan_md: str
+    prd_md: str
+    architecture_md: str
+    stories_md: str
     stack_config: dict
     llm_config: dict[str, LlmRoleConfig]
     execution_contract: dict

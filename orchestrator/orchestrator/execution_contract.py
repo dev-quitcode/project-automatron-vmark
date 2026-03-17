@@ -131,6 +131,9 @@ def build_execution_contract(
                 "allowed_autonomy": previous.get("allowed_autonomy", DEFAULT_ALLOWED_AUTONOMY),
                 "escalate_if": previous.get("escalate_if", DEFAULT_ESCALATE_IF),
                 "depends_on": [prev_dep_id] if prev_dep_id else [],
+                "epic": previous.get("epic", ""),
+                "story_id": previous.get("story_id", ""),
+                "story": previous.get("story", ""),
                 "status": "completed" if _is_task_completed(plan_md, task.line_number) else "pending",
                 "completed": _is_task_completed(plan_md, task.line_number),
                 "attempt_count": int(previous.get("attempt_count", 0)),
@@ -201,6 +204,9 @@ def normalize_execution_contract(contract: dict[str, Any] | None) -> dict[str, A
         task.setdefault("allowed_autonomy", list(DEFAULT_ALLOWED_AUTONOMY))
         task.setdefault("escalate_if", list(DEFAULT_ESCALATE_IF))
         task.setdefault("depends_on", [])
+        task.setdefault("epic", "")
+        task.setdefault("story_id", "")
+        task.setdefault("story", "")
         task["completed"] = bool(task.get("completed", False))
         task["attempt_count"] = int(task.get("attempt_count", 0) or 0)
         task.setdefault("status", "completed" if task["completed"] else "pending")

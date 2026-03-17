@@ -214,6 +214,12 @@ async def architect_node(state: AutomatronState) -> dict:
             existing_execution_contract=state.get("execution_contract", {}),
         )
 
+    # Extract docs blocks from final response (after any repair).
+    # On escalation paths only architecture_md may be updated; PRD and STORIES stay fixed.
+    prd_md = _extract_tagged_md(response_text, "prd")
+    architecture_md = _extract_tagged_md(response_text, "architecture")
+    stories_md = _extract_tagged_md(response_text, "stories")
+
     if new_plan_md:
         execution_contract = execution_contract or build_execution_contract(
             project_name=project_name,
@@ -291,6 +297,17 @@ async def architect_node(state: AutomatronState) -> dict:
     if is_escalation:
         result["escalation_count"] = state.get("escalation_count", 0) + 1
         result["last_escalation"] = {}
+        # On escalation, only persist architecture_md if the LLM updated it.
+        if architecture_md:
+            result["architecture_md"] = architecture_md
+    else:
+        # Initial planning: persist all three docs blocks (fall back to state if LLM omitted them).
+        if prd_md:
+            result["prd_md"] = prd_md
+        if architecture_md:
+            result["architecture_md"] = architecture_md
+        if stories_md:
+            result["stories_md"] = stories_md
 
     logger.info("Architect generated plan for %s (%d chars)", project_name, len(new_plan_md or ""))
     return result
@@ -353,6 +370,20 @@ def _extract_plan_md(response: str) -> str | None:
         return response.strip()
 
     return None
+
+
+def _extract_tagged_md(response: str, tag: str) -> str | None:
+    """Extract a tagged markdown block like ```markdown:prd ... ``` from the response."""
+    marker = f"```markdown:{tag}"
+    if marker not in response:
+        return None
+    try:
+        start = response.index(marker) + len(marker)
+        end = response.index("```", start)
+        content = response[start:end].strip()
+        return content if content else None
+    except ValueError:
+        return None
 
 
 def _extract_stack_config(response: str) -> dict | None:

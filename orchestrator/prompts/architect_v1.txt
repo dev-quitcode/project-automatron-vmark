@@ -118,6 +118,9 @@ This is the runtime source of truth. It MUST include:
         "requires_schema_redesign"
       ],
       "depends_on": [],
+      "epic": "Foundation",
+      "story_id": "story-1.1",
+      "story": "Scaffold Setup",
       "status": "pending",
       "completed": false,
       "attempt_count": 0
@@ -133,6 +136,68 @@ This is the runtime source of truth. It MUST include:
   "contract_version": 1
 }
 ```
+
+### 4. docs/PRD.md (inside a ```markdown:prd block)
+
+Required on initial planning only. Captures the why, scope, and success criteria:
+
+```markdown:prd
+# PRD: ProjectName
+
+## Why
+<problem or motivation — what user pain does this solve>
+
+## Scope (MVP)
+**In:** <what is included in this MVP>
+**Out:** <explicit exclusions to keep scope tight>
+
+## Success Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+```
+
+### 5. docs/ARCHITECTURE.md (inside a ```markdown:architecture block)
+
+Required on initial planning only. Documents the current technical design:
+
+```markdown:architecture
+# Architecture: ProjectName
+
+## Stack
+<framework, database, styling library, deployment approach>
+
+## Key Design Decisions
+- **Decision**: <what was decided> — <why>
+
+## Component Map
+<brief breakdown of major modules/routes/services>
+
+## Data Flow
+<how requests or data move through the system>
+```
+
+### 6. docs/STORIES.md (inside a ```markdown:stories block)
+
+Required on initial planning only. Expresses the backlog as Epics → Stories → Tasks:
+
+```markdown:stories
+# Stories
+
+## Epic: EpicName
+### Story: StoryName
+- [ ] `task-001` Task title
+- [ ] `task-002` Task title
+
+## Epic: EpicName2
+### Story: StoryName2
+- [ ] `task-003` Task title
+```
+
+**Rules for docs:**
+- Group all tasks into at least one Epic and one Story per Epic.
+- Each Story should cover 1–4 atomic tasks that together achieve a coherent goal.
+- PRD.md, ARCHITECTURE.md, and STORIES.md are only required on initial planning — omit them on correction/escalation deltas.
+- The `task-NNN` IDs in STORIES.md must match the `task_id` values in `execution_contract.json`.
 
 When you are handling a correction or escalation path, you MUST also produce a fourth artifact:
 
@@ -189,6 +254,8 @@ Use this information to make targeted fixes:
 8. Group tasks into logical phases.
 9. Assume the coder has no context beyond these artifacts.
 10. Keep the MVP focused and within 25 tasks.
+10a. Every task in `execution_contract.json` MUST include `epic`, `story_id`, and `story` fields that match the grouping in `docs/STORIES.md`.
+10b. `docs/PRD.md`, `docs/ARCHITECTURE.md`, and `docs/STORIES.md` are required artifacts on initial planning.
 11. Every task in `execution_contract.json` MUST include `done_when`, `validation_commands`, `allowed_autonomy`, and `escalate_if`.
 12. `PLAN.md` and `execution_contract.json` must describe the same tasks in the same order.
 13. `execution_contract.json` must be machine-parseable and precise.
