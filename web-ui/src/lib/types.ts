@@ -93,6 +93,31 @@ export interface Project {
   updated_at: string;
 }
 
+export type IssueStatus = "open" | "pr_open" | "pr_reviewed" | "merged" | "closed";
+
+export interface PRReview {
+  passed: boolean;
+  summary: string;
+  pr_number: number;
+  issue_number: number;
+}
+
+export interface GithubIssue {
+  id: string;
+  project_id: string;
+  issue_number: number;
+  title: string;
+  epic: string | null;
+  story: string | null;
+  status: IssueStatus;
+  pr_number: number | null;
+  pr_url: string | null;
+  pr_review: PRReview | null;
+  copilot_workspace_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MessageRole = "user" | "architect" | "system";
 
 export interface ChatMessage {
@@ -103,7 +128,7 @@ export interface ChatMessage {
   timestamp: string;
 }
 
-export type BuilderStatus = "SUCCESS" | "BLOCKER" | "AMBIGUITY" | "SILENT_DECISION";
+export type BuilderStatus = "SUCCESS" | "BLOCKER" | "AMBIGUITY" | "SILENT_DECISION" | "ERROR";
 
 export interface BuilderLog {
   project_id: string;
@@ -178,7 +203,8 @@ export interface PlanProgress {
 
 export interface ProjectCreateRequest {
   name: string;
-  intake_text: string;
+  repo_url?: string;
+  intake_text?: string;
   source?: string;
   source_ref?: string | null;
   llm_config?: ProjectLlmConfig;

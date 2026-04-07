@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   DeployRun,
   DeployTargetRequest,
+  GithubIssue,
   LlmProvider,
   ProviderModelCatalog,
   PreflightResult,
@@ -206,4 +207,23 @@ export async function updateDeployTarget(
 
 export async function getDeployRuns(projectId: string): Promise<DeployRun[]> {
   return request(`/api/projects/${projectId}/deploy-runs`);
+}
+
+export async function getIssues(projectId: string): Promise<GithubIssue[]> {
+  return request(`/api/projects/${projectId}/issues`);
+}
+
+export async function syncIssues(projectId: string): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/sync-issues`, { method: "POST" });
+}
+
+export async function reviewPR(
+  projectId: string,
+  issueNumber: number,
+  prNumber: number
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/review-pr`, {
+    method: "POST",
+    body: JSON.stringify({ issue_number: issueNumber, pr_number: prNumber }),
+  });
 }

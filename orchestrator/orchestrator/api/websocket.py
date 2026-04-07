@@ -143,9 +143,47 @@ async def emit_human_required(project_id: str, reason: str, *, stage: str | None
     await sio.emit("human:required", payload, room=_project_room(project_id))
 
 
+async def emit_error(project_id: str, message: str, *, stage: str = "error") -> None:
+    await sio.emit(
+        "run:error",
+        {"project_id": project_id, "message": message, "stage": stage},
+        room=_project_room(project_id),
+    )
+
+
 async def emit_plan_updated(project_id: str, plan_md: str) -> None:
     await sio.emit(
         "plan:updated",
         {"project_id": project_id, "plan_md": plan_md},
+        room=_project_room(project_id),
+    )
+
+
+async def emit_issues_updated(project_id: str, issues: list) -> None:
+    """Fires after apply_plan and sync_issues with the current issue list."""
+    await sio.emit(
+        "issues:updated",
+        {"project_id": project_id, "issues": issues},
+        room=_project_room(project_id),
+    )
+
+
+async def emit_pr_review_ready(
+    project_id: str,
+    issue_number: int,
+    pr_number: int,
+    passed: bool,
+    summary: str,
+) -> None:
+    """Fires after an AI PR review completes."""
+    await sio.emit(
+        "pr:review_ready",
+        {
+            "project_id": project_id,
+            "issue_number": issue_number,
+            "pr_number": pr_number,
+            "passed": passed,
+            "summary": summary,
+        },
         room=_project_room(project_id),
     )

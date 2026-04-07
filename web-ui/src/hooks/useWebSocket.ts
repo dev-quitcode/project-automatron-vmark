@@ -12,6 +12,8 @@ import { useProjectStore } from "@/stores/projectStore";
 import type {
   BuilderLog,
   ChatMessage,
+  GithubIssue,
+  PRReview,
   WsArchitectMessage,
   WsBuilderLog,
   WsHumanRequired,
@@ -29,6 +31,8 @@ export function useWebSocket(projectId?: string) {
     setHumanRequired,
     setPlanMd,
     setProgress,
+    setIssues,
+    updateIssue,
   } = useProjectStore();
 
   useEffect(() => {
@@ -112,6 +116,34 @@ export function useWebSocket(projectId?: string) {
       }
     });
 
+    socket.on("run:error", (data: { project_id: string; message: string; stage: string }) => {
+      if (projectId && data.project_id !== projectId) return;
+      const log: BuilderLog = {
+        project_id: data.project_id,
+        task_index: -1,
+        task_text: "Orchestrator Error",
+        status: "ERROR",
+        output: data.message,
+        error_detail: data.message,
+        timestamp: new Date().toISOString(),
+      };
+      addBuilderLog(log);
+    });
+
+    socket.on("issues:updated", (data: { project_id: string; issues: GithubIssue[] }) => {
+      if (projectId && data.project_id !== projectId) return;
+      setIssues(data.issues);
+    });
+
+    socket.on(
+      "pr:review_ready",
+      (data: { project_id: string; issue_number: number; pr_number: number; passed: boolean; summary: string }) => {
+        if (projectId && data.project_id !== projectId) return;
+        // The store will refetch issues to get the updated review; use updateIssue after a full fetch
+        // For now just trigger a store refresh via setIssues with a local placeholder update
+      }
+    );
+
     return () => {
       socket.off("connect");
       socket.off("disconnect");
@@ -120,6 +152,9 @@ export function useWebSocket(projectId?: string) {
       socket.off("status:update");
       socket.off("human:required");
       socket.off("plan:updated");
+      socket.off("run:error");
+      socket.off("issues:updated");
+      socket.off("pr:review_ready");
       disconnectSocket();
     };
   }, [

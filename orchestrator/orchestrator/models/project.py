@@ -59,6 +59,9 @@ PROJECT_COLUMN_DEFS: dict[str, str] = {
     "approval_history_json": "TEXT",
     "last_deploy_at": "TEXT",
     "last_deploy_run_id": "TEXT",
+    "github_repo_owner": "TEXT",
+    "github_repo_name": "TEXT",
+    "issue_plan_json": "TEXT",
 }
 
 JSON_FIELDS = {
@@ -308,6 +311,27 @@ async def init_db(db_path: str) -> None:
                 stage TEXT,
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """
+        )
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS github_issues (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                title       TEXT NOT NULL,
+                epic        TEXT,
+                story       TEXT,
+                status      TEXT NOT NULL DEFAULT 'open',
+                pr_number   INTEGER,
+                pr_url      TEXT,
+                pr_review_json TEXT,
+                copilot_workspace_url TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id)
             )
             """
@@ -838,6 +862,108 @@ async def save_trace_event(
                 stage,
                 _json_dumps(payload),
                 _now(),
+            ),
+        )
+        await db.commit()
+
+
+async def create_github_issue(
+    issue_id: str,
+    project_id: str,
+    issue_number: int,
+    title: str,
+    *,
+    epic: str | None = None,
+    story: str | None = None,
+    copilot_workspace_url: str | None = None,
+) -> dict[str, Any]:
+    await _ensure_db_ready()
+    now = _now()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO github_issues
+                (id, project_id, issue_number, title, epic, story, status,
+                 copilot_workspace_url, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+            """,
+            (issue_id, project_id, issue_number, title, epic, story,
+             copilot_workspace_url, now, now),
+        )
+        await db.commit()
+    return await _get_github_issue(project_id, issue_number)  # type: ignore[return-value]
+
+
+async def _get_github_issue(project_id: str, issue_number: int) -> dict[str, Any] | None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM github_issues WHERE project_id = ? AND issue_number = ?",
+            (project_id, issue_number),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["pr_review"] = _json_loads(item.pop("pr_review_json", None), {})
+        return item
+
+
+async def list_github_issues(project_id: str) -> list[dict[str, Any]]:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM github_issues WHERE project_id = ? ORDER BY issue_number",
+            (project_id,),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["pr_review"] = _json_loads(item.pop("pr_review_json", None), {})
+            result.append(item)
+        return result
+
+
+async def update_github_issue_status(
+    project_id: str, issue_number: int, status: str
+) -> None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            "UPDATE github_issues SET status = ?, updated_at = ? WHERE project_id = ? AND issue_number = ?",
+            (status, _now(), project_id, issue_number),
+        )
+        await db.commit()
+
+
+async def update_github_issue_pr(
+    project_id: str,
+    issue_number: int,
+    pr_number: int,
+    pr_url: str,
+    status: str = "pr_open",
+    pr_review: dict[str, Any] | None = None,
+) -> None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            """
+            UPDATE github_issues
+            SET pr_number = ?, pr_url = ?, status = ?,
+                pr_review_json = ?, updated_at = ?
+            WHERE project_id = ? AND issue_number = ?
+            """,
+            (
+                pr_number,
+                pr_url,
+                status,
+                _json_dumps(pr_review) if pr_review else None,
+                _now(),
+                project_id,
+                issue_number,
             ),
         )
         await db.commit()

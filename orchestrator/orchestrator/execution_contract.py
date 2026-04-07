@@ -372,3 +372,8 @@ class _VirtualPath:
 
     def exists(self) -> bool:
         return self._exists
+
+    def __truediv__(self, other: str) -> "_VirtualPath":
+        # Chained path access (e.g. workspace / "prisma" / "schema.prisma") —
+        # nested paths are never in the marker set so they don't exist.
+        return _VirtualPath(False)

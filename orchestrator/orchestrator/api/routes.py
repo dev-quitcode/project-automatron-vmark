@@ -2,31 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
-from orchestrator.graph.runner import (
-    _aget_graph,
-    _make_thread_config,
-    deploy_project as runner_deploy,
-    get_checkpoints,
-    get_runtime_project as runner_get_runtime_project,
-    get_task_status as runner_get_task_status,
-    is_running,
-    restart_preview as runner_restart_preview,
-    resume_project as runner_resume,
-    run_preflight as runner_preflight,
-    sync_cicd_status as runner_sync_cicd,
-    start_project as runner_start,
-    stop_project as runner_stop,
-)
 from orchestrator.llm.catalog import get_all_provider_model_catalogs, get_provider_model_catalog
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config
-from orchestrator.repository.manager import RepositoryManager
-from orchestrator.validation.preflight import PreflightService
 from orchestrator.models.project import (
     create_project,
     get_all_projects,
@@ -35,14 +19,21 @@ from orchestrator.models.project import (
     get_project,
     get_task_logs,
     get_trace_events,
-    sync_project_from_state,
-    update_project_deploy_target,
+    list_github_issues,
     update_project_llm_config,
     update_project_plan,
     update_project_stage,
     update_project_status,
 )
 from orchestrator.models.session import get_sessions
+from orchestrator.orchestrator import (
+    resume_project as orch_resume,
+    review_pr as orch_review_pr,
+    start_project as orch_start,
+    sync_issues as orch_sync_issues,
+)
+from orchestrator.validation.preflight import PreflightService
+from orchestrator.repository.manager import RepositoryManager
 
 router = APIRouter()
 repository_manager = RepositoryManager()
@@ -62,11 +53,17 @@ class ProjectLlmConfigRequest(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: str
-    intake_text: str | None = None
+    repo_url: str | None = None          # GitHub repo URL — new primary field
+    intake_text: str | None = None       # kept for backward compat (treated as repo_url if set)
     description: str | None = None
     source: str = "manual"
     source_ref: str | None = None
     llm_config: ProjectLlmConfigRequest | None = None
+
+
+class ReviewPRRequest(BaseModel):
+    issue_number: int
+    pr_number: int
 
 
 class UpdatePlanRequest(BaseModel):
@@ -75,10 +72,6 @@ class UpdatePlanRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     feedback: str | None = None
-
-
-class RollbackRequest(BaseModel):
-    checkpoint_id: str
 
 
 class DeployTargetRequest(BaseModel):
@@ -176,33 +169,9 @@ class PreflightResponse(BaseModel):
     checks: list[PreflightCheckResponse] = Field(default_factory=list)
 
 
-class ExecutionContractResponse(BaseModel):
-    project_id: str
-    contract_version: int = 0
-    execution_contract: dict[str, Any] = Field(default_factory=dict)
-
-
-class DecisionLogResponse(BaseModel):
-    project_id: str
-    contract_version: int = 0
-    decision_log: list[dict[str, Any]] = Field(default_factory=list)
-    plan_delta_history: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class TaskStatusResponse(BaseModel):
-    project_id: str
-    active_task_id: str | None = None
-    active_task: dict[str, Any] | None = None
-    completed_tasks: int = 0
-    total_tasks: int = 0
-    task_attempt_count: int = 0
-    task_validation_result: dict[str, Any] = Field(default_factory=dict)
-    builder_report: dict[str, Any] = Field(default_factory=dict)
-    last_escalation: dict[str, Any] = Field(default_factory=dict)
-
 
 async def _get_required_project(project_id: str) -> dict[str, Any]:
-    project = await runner_get_runtime_project(project_id)
+    project = await get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -223,14 +192,15 @@ async def api_get_llm_provider_models(provider: str, force_refresh: bool = False
 
 @router.post("/projects", response_model=ProjectResponse)
 async def api_create_project(req: CreateProjectRequest) -> Any:
-    intake_text = (req.intake_text or req.description or "").strip()
-    if not intake_text:
-        raise HTTPException(status_code=422, detail="Either intake_text or description is required")
+    # repo_url takes precedence; fall back to intake_text for backward compat
+    repo_url = (req.repo_url or req.intake_text or req.description or "").strip()
+    if not repo_url:
+        raise HTTPException(status_code=422, detail="repo_url is required")
 
     project = await create_project(
         str(uuid.uuid4()),
         req.name,
-        intake_text,
+        repo_url,  # stored as intake_text / repo_url
         intake_source=req.source,
         source_ref=req.source_ref,
         llm_config=normalize_llm_config(req.llm_config.model_dump() if req.llm_config else None),
@@ -248,40 +218,36 @@ async def api_get_project(project_id: str) -> Any:
     return await _get_required_project(project_id)
 
 
-@router.get("/projects/{project_id}/execution-contract", response_model=ExecutionContractResponse)
-async def api_get_execution_contract(project_id: str) -> Any:
-    project = await _get_required_project(project_id)
-    return {
-        "project_id": project_id,
-        "contract_version": int(project.get("contract_version", 0) or 0),
-        "execution_contract": project.get("execution_contract") or {},
-    }
-
-
-@router.get("/projects/{project_id}/decision-log", response_model=DecisionLogResponse)
-async def api_get_decision_log(project_id: str) -> Any:
-    project = await _get_required_project(project_id)
-    return {
-        "project_id": project_id,
-        "contract_version": int(project.get("contract_version", 0) or 0),
-        "decision_log": project.get("decision_log") or [],
-        "plan_delta_history": project.get("plan_delta_history") or [],
-    }
-
-
-@router.get("/projects/{project_id}/task-status", response_model=TaskStatusResponse)
-async def api_get_task_status(project_id: str) -> Any:
-    await _get_required_project(project_id)
-    return await runner_get_task_status(project_id)
 
 
 @router.delete("/projects/{project_id}")
 async def api_delete_project(project_id: str) -> dict[str, str]:
     await _get_required_project(project_id)
-    await runner_stop(project_id)
     await update_project_stage(project_id, "error")
     await update_project_status(project_id, "deleted")
     return {"status": "deleted", "project_id": project_id}
+
+
+@router.get("/projects/{project_id}/issues")
+async def api_get_issues(project_id: str) -> list[dict[str, Any]]:
+    await _get_required_project(project_id)
+    return await list_github_issues(project_id)
+
+
+@router.post("/projects/{project_id}/sync-issues")
+async def api_sync_issues(project_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
+    await _get_required_project(project_id)
+    background_tasks.add_task(orch_sync_issues, project_id)
+    return {"status": "syncing", "project_id": project_id}
+
+
+@router.post("/projects/{project_id}/review-pr")
+async def api_review_pr(
+    project_id: str, req: ReviewPRRequest, background_tasks: BackgroundTasks
+) -> dict[str, str]:
+    await _get_required_project(project_id)
+    background_tasks.add_task(orch_review_pr, project_id, req.issue_number, req.pr_number)
+    return {"status": "reviewing", "project_id": project_id}
 
 
 @router.put("/projects/{project_id}/plan")
@@ -305,34 +271,37 @@ async def api_get_plan(project_id: str) -> dict[str, str | None]:
 
 
 @router.post("/projects/{project_id}/start")
-async def api_start_project(project_id: str) -> Any:
-    await _get_required_project(project_id)
-    result = await runner_start(project_id)
+async def api_start_project(project_id: str, background_tasks: BackgroundTasks) -> Any:
+    project = await _get_required_project(project_id)
+    # Run preflight (LLM config check only in GitHub-native mode)
+    result = await preflight_service.run("start", project=project)
     _raise_for_preflight_failure(result)
-    return result
+    background_tasks.add_task(orch_start, project_id)
+    return {"status": "started", "project_id": project_id}
 
 
 @router.post("/projects/{project_id}/approve-plan")
-async def api_approve_plan(project_id: str, req: ApproveRequest | None = None) -> dict[str, str]:
+async def api_approve_plan(
+    project_id: str, background_tasks: BackgroundTasks, req: ApproveRequest | None = None
+) -> dict[str, str]:
     await _get_required_project(project_id)
-    return await runner_resume(project_id, approval_type="plan", feedback=req.feedback if req else None)
+    background_tasks.add_task(orch_resume, project_id, "plan", True)
+    return {"status": "resuming", "project_id": project_id}
 
 
 @router.post("/projects/{project_id}/approve")
-async def api_approve_project(project_id: str, req: ApproveRequest | None = None) -> dict[str, str]:
-    return await api_approve_plan(project_id, req)
-
-
-@router.post("/projects/{project_id}/approve-preview")
-async def api_approve_preview(project_id: str, req: ApproveRequest | None = None) -> dict[str, str]:
-    await _get_required_project(project_id)
-    return await runner_resume(project_id, approval_type="preview", feedback=req.feedback if req else None)
+async def api_approve_project(
+    project_id: str, background_tasks: BackgroundTasks, req: ApproveRequest | None = None
+) -> dict[str, str]:
+    return await api_approve_plan(project_id, background_tasks, req)
 
 
 @router.post("/projects/{project_id}/stop")
 async def api_stop_project(project_id: str) -> dict[str, str]:
     await _get_required_project(project_id)
-    return await runner_stop(project_id)
+    await update_project_status(project_id, "stopped")
+    await update_project_stage(project_id, "stopped")
+    return {"status": "stopped", "project_id": project_id}
 
 
 @router.put("/projects/{project_id}/deploy-target")
@@ -365,70 +334,10 @@ async def api_update_deploy_target(project_id: str, req: DeployTargetRequest) ->
     return {"status": "configured", "project_id": project_id}
 
 
-@router.post("/projects/{project_id}/deploy")
-async def api_deploy_project(project_id: str) -> Any:
-    await _get_required_project(project_id)
-    result = await runner_deploy(project_id)
-    _raise_for_preflight_failure(result)
-    return result
-
-
 @router.post("/projects/{project_id}/preflight", response_model=PreflightResponse)
 async def api_preflight_project(project_id: str, req: PreflightRequest) -> Any:
-    await _get_required_project(project_id)
-    return await runner_preflight(project_id, req.phase)
-
-
-@router.post("/projects/{project_id}/preview/restart", response_model=ProjectResponse)
-async def api_restart_preview(project_id: str) -> Any:
-    await _get_required_project(project_id)
-    result = await runner_restart_preview(project_id)
-    if result.get("status") not in {"restarted"}:
-        raise HTTPException(status_code=409, detail=result)
-    return await _get_required_project(project_id)
-
-
-@router.post("/projects/{project_id}/sync-cicd", response_model=ProjectResponse)
-async def api_sync_cicd(project_id: str) -> Any:
-    await _get_required_project(project_id)
-    await runner_sync_cicd(project_id)
-    return await _get_required_project(project_id)
-
-
-@router.get("/projects/{project_id}/history")
-async def api_get_history(project_id: str) -> dict[str, Any]:
-    return {"project_id": project_id, "checkpoints": await get_checkpoints(project_id)}
-
-
-@router.post("/projects/{project_id}/rollback")
-async def api_rollback(project_id: str, req: RollbackRequest) -> dict[str, str]:
     project = await _get_required_project(project_id)
-    if is_running(project_id):
-        raise HTTPException(status_code=409, detail="Cannot rollback while the project is running")
-
-    graph = await _aget_graph()
-    config = _make_thread_config(project_id)
-    target_state = None
-    async for checkpoint in graph.aget_state_history(config):
-        checkpoint_id = checkpoint.config.get("configurable", {}).get("checkpoint_id", "")
-        if checkpoint_id == req.checkpoint_id:
-            target_state = checkpoint
-            break
-
-    if target_state is None:
-        raise HTTPException(status_code=404, detail="Checkpoint not found")
-
-    checkpoint_config = {
-        "configurable": {
-            "thread_id": config["configurable"]["thread_id"],
-            "checkpoint_id": req.checkpoint_id,
-        }
-    }
-    await graph.aupdate_state(checkpoint_config, target_state.values)
-    await sync_project_from_state(project_id, target_state.values)
-    await update_project_stage(project_id, target_state.values.get("project_stage", project["project_stage"]))
-    await update_project_status(project_id, target_state.values.get("status", project["status"]))
-    return {"status": "rolled_back", "project_id": project_id}
+    return await preflight_service.run(req.phase, project=project)
 
 
 @router.get("/projects/{project_id}/logs")

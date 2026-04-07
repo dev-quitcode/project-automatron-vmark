@@ -13,7 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from orchestrator.api.routes import router as api_router
 from orchestrator.api.socket_server import sio
 from orchestrator.config import settings
-from orchestrator.graph.graph import close_checkpointer
 from orchestrator.models.project import init_db
 
 logger = logging.getLogger(__name__)
@@ -26,7 +25,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db(settings.sqlite_db_path)
     logger.info("Database initialized at %s", settings.sqlite_db_path)
     yield
-    await close_checkpointer()
     logger.info("Automatron Orchestrator shutting down...")
 
 

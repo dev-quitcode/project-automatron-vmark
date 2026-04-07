@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Automatron — How It Works</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        /* ── Reset & Base ─────────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface-2: #232736;
+            --border: #2e3347;
+            --text: #e4e6f0;
+            --text-muted: #8b90a5;
+            --accent: #6c8cff;
+            --accent-glow: rgba(108, 140, 255, 0.15);
+            --green: #3dd68c;
+            --yellow: #f0c95a;
+            --red: #f06565;
+            --purple: #b481f5;
+            --cyan: #4ecdc4;
+            --orange: #f0965a;
+            --radius: 12px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        /* ── Layout ───────────────────────────────────────────────── */
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* ── Hero ─────────────────────────────────────────────────── */
+        .hero {
+            text-align: center;
+            padding: 80px 24px 60px;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            letter-spacing: -1px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero .subtitle {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 640px;
+            margin: 0 auto 32px;
+        }
+        .hero .badge {
+            display: inline-block;
+            padding: 6px 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            font-size: 0.85rem;
+            color: var(--accent);
+        }
+
+        /* ── TLDR strip ───────────────────────────────────────────── */
+        .tldr {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            padding: 40px 0;
+        }
+        .tldr-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            text-align: center;
+        }
+        .tldr-card .num {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .tldr-card .label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* ── Stage sections ───────────────────────────────────────── */
+        .stage {
+            position: relative;
+            padding: 56px 0;
+        }
+        .stage + .stage { border-top: 1px solid var(--border); }
+
+        .stage-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        .stage-number {
+            width: 48px; height: 48px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 1.1rem;
+            flex-shrink: 0;
+        }
+        .stage-header h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+        }
+        .stage-header .stage-sub {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .stage-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+        @media (max-width: 768px) {
+            .stage-content { grid-template-columns: 1fr; }
+            .hero h1 { font-size: 2rem; }
+        }
+
+        .stage-text p {
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+        .stage-text p strong { color: var(--text); }
+
+        /* ── Cards ────────────────────────────────────────────────── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            transition: border-color 0.2s;
+        }
+        .card:hover { border-color: var(--accent); }
+
+        .card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .card p, .card li {
+            color: var(--text-muted);
+            font-size: 0.92rem;
+        }
+        .card ul {
+            list-style: none;
+            padding: 0;
+        }
+        .card ul li {
+            padding: 4px 0 4px 20px;
+            position: relative;
+        }
+        .card ul li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+
+        /* ── Actors ───────────────────────────────────────────────── */
+        .actors {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 40px;
+        }
+        @media (max-width: 768px) {
+            .actors { grid-template-columns: 1fr; }
+        }
+        .actor-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            text-align: center;
+        }
+        .actor-card .icon { font-size: 2.2rem; margin-bottom: 8px; }
+        .actor-card h4 { font-size: 1rem; margin-bottom: 6px; }
+        .actor-card p { font-size: 0.85rem; color: var(--text-muted); }
+
+        /* ── Retry ladder ─────────────────────────────────────────── */
+        .retry-ladder {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+        .retry-step {
+            display: flex;
+            align-items: stretch;
+            gap: 16px;
+        }
+        .retry-line {
+            width: 3px;
+            background: var(--border);
+            margin-left: 22px;
+            flex-shrink: 0;
+        }
+        .retry-step:last-child .retry-line { display: none; }
+        .retry-dot {
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 6px;
+        }
+        .retry-body {
+            padding-bottom: 20px;
+        }
+        .retry-body h4 { font-size: 0.95rem; margin-bottom: 2px; }
+        .retry-body p { font-size: 0.85rem; color: var(--text-muted); }
+
+        /* ── Diagram section ──────────────────────────────────────── */
+        .diagram-section {
+            padding: 56px 0;
+            border-top: 1px solid var(--border);
+        }
+        .diagram-section h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .diagram-section .intro {
+            color: var(--text-muted);
+            margin-bottom: 32px;
+        }
+        .diagram-wrapper {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 32px;
+            overflow-x: auto;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+
+        /* ── WebSocket events table ───────────────────────────────── */
+        .events-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        .events-table th, .events-table td {
+            text-align: left;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .events-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .events-table td:first-child {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            color: var(--accent);
+            font-size: 0.85rem;
+        }
+
+        /* ── Footer ───────────────────────────────────────────────── */
+        footer {
+            text-align: center;
+            padding: 48px 24px;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+        footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        /* ── Color accents per stage ──────────────────────────────── */
+        .c-blue { background: rgba(108,140,255,0.12); color: var(--accent); border-color: var(--accent); }
+        .c-green { background: rgba(61,214,140,0.12); color: var(--green); border-color: var(--green); }
+        .c-yellow { background: rgba(240,201,90,0.12); color: var(--yellow); border-color: var(--yellow); }
+        .c-purple { background: rgba(180,129,245,0.12); color: var(--purple); border-color: var(--purple); }
+        .c-cyan { background: rgba(78,205,196,0.12); color: var(--cyan); border-color: var(--cyan); }
+        .c-orange { background: rgba(240,150,90,0.12); color: var(--orange); border-color: var(--orange); }
+        .c-red { background: rgba(240,101,101,0.12); color: var(--red); border-color: var(--red); }
+
+        .pill {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 1px solid;
+        }
+
+        /* ── Connector line between stages ────────────────────────── */
+        .connector {
+            text-align: center;
+            padding: 8px 0;
+            color: var(--text-muted);
+            font-size: 1.4rem;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- HERO                                                          -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<header class="hero">
+    <div class="badge">Open-Source Autonomous Builder</div>
+    <h1>Project Automatron</h1>
+    <p class="subtitle">
+        Describe your app in plain English. Automatron plans it, codes it,
+        tests it, and deploys it — you just approve twice.
+    </p>
+</header>
+
+<div class="container">
+
+    <!-- ── TLDR Numbers ──────────────────────────────────────────── -->
+    <section class="tldr">
+        <div class="tldr-card">
+            <div class="num">6</div>
+            <div class="label">Stages from idea to live app</div>
+        </div>
+        <div class="tldr-card">
+            <div class="num">2</div>
+            <div class="label">Human approvals needed</div>
+        </div>
+        <div class="tldr-card">
+            <div class="num">4</div>
+            <div class="label">Levels of self-healing</div>
+        </div>
+        <div class="tldr-card">
+            <div class="num">3</div>
+            <div class="label">AI actors (Architect, Coder, Reviewer)</div>
+        </div>
+    </section>
+
+    <!-- ── Meet the AI Actors ────────────────────────────────────── -->
+    <section style="padding: 24px 0 56px;">
+        <h2 style="font-size: 1.4rem; margin-bottom: 20px;">Meet the AI Team</h2>
+        <div class="actors">
+            <div class="actor-card">
+                <div class="icon">🧠</div>
+                <h4>Architect</h4>
+                <p>Plans the project, breaks it into tasks, chooses the tech stack, writes documentation, and re-plans when the builder gets stuck.</p>
+            </div>
+            <div class="actor-card">
+                <div class="icon">🤖</div>
+                <h4>Coder</h4>
+                <p>Writes code inside a sandboxed Docker container using the Cline CLI. Creates files, installs packages, runs commands — like a developer.</p>
+            </div>
+            <div class="actor-card">
+                <div class="icon">🔍</div>
+                <h4>Reviewer</h4>
+                <p>Checks each task's output, decides if it passed or failed, records learnings, and escalates when the coder can't fix an issue.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 1: Planning                                         -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-blue">1</div>
+            <div>
+                <h2>You Describe Your Idea</h2>
+                <div class="stage-sub">The Architect AI turns your description into a full build plan</div>
+            </div>
+        </div>
+        <div class="stage-content">
+            <div class="stage-text">
+                <p>
+                    You type a plain-English description of what you want to build.
+                    It can be as short as <strong>"Build me an invoice dashboard with Next.js and Tailwind"</strong>
+                    or a detailed multi-paragraph spec.
+                </p>
+                <p>
+                    The <strong>Architect AI</strong> reads your description and generates a complete project plan including:
+                    a step-by-step build order, technology choices, an execution contract (task graph),
+                    and structured documentation — PRD, Architecture, and Stories.
+                </p>
+                <p>
+                    Before anything starts, the system runs <strong>preflight checks</strong> to make sure
+                    Docker is running, API keys are valid, and the selected AI model is available.
+                    If anything is missing, you'll see exactly what to fix.
+                </p>
+            </div>
+            <div>
+                <div class="card" style="margin-bottom: 16px;">
+                    <h3>📄 What the Architect produces</h3>
+                    <ul>
+                        <li><strong>PLAN.md</strong> — ordered task checklist with phases</li>
+                        <li><strong>execution_contract.json</strong> — machine-readable task graph</li>
+                        <li><strong>stack_config.json</strong> — framework, DB, styling choices</li>
+                        <li><strong>PRD.md</strong> — why we're building this, scope, success criteria</li>
+                        <li><strong>ARCHITECTURE.md</strong> — system design and data flow</li>
+                        <li><strong>STORIES.md</strong> — epics and user stories</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3>⏸ Your first approval</h3>
+                    <p>You review the plan in the UI. You can approve it as-is or request changes — the Architect will revise and ask again.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="connector">↓</div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 2: Workspace Setup                                  -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-green">2</div>
+            <div>
+                <h2>Setting Up the Workspace</h2>
+                <div class="stage-sub">A GitHub repo and sandboxed Docker container are created automatically</div>
+            </div>
+        </div>
+        <div class="stage-content">
+            <div class="stage-text">
+                <p>
+                    Once you approve the plan, Automatron creates a <strong>GitHub repository</strong>
+                    with a proper branch structure (<code>main</code> → <code>develop</code> → <code>feature/automatron-build</code>).
+                </p>
+                <p>
+                    It then spins up an isolated <strong>Docker container</strong> from the golden image — a pre-built
+                    environment with Node.js, Python, and the Cline coding CLI installed. Inside this sandbox,
+                    it runs an init script to bootstrap your chosen framework (Next.js, Vite, Python, etc.),
+                    creates the folder structure, writes config files, and generates the project documentation.
+                </p>
+                <p>
+                    Everything is committed as the initial scaffold and pushed to GitHub.
+                    <strong>The container persists</strong> across all subsequent build tasks, validation, and preview.
+                </p>
+            </div>
+            <div>
+                <div class="card" style="margin-bottom: 16px;">
+                    <h3>📦 Repository</h3>
+                    <ul>
+                        <li>GitHub repo created with branch protection</li>
+                        <li>Branch structure: main → develop → feature</li>
+                        <li>CI/CD workflows pre-configured</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3>🐳 Docker Container</h3>
+                    <ul>
+                        <li>Based on <code>automatron/golden:latest</code></li>
+                        <li>Ubuntu 24.04 + Node.js + Python + Cline CLI</li>
+                        <li>LLM API keys injected securely</li>
+                        <li>Port allocated for later preview</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="connector">↓</div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 3: Build Loop                                       -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-yellow">3</div>
+            <div>
+                <h2>Building — One Task at a Time</h2>
+                <div class="stage-sub">The core loop: pick a task → code it → verify → review → repeat</div>
+            </div>
+        </div>
+        <div class="stage-content" style="grid-template-columns: 1fr;">
+            <div class="stage-text" style="max-width: 720px;">
+                <p>
+                    This is where the real work happens. The system picks <strong>one task at a time</strong>
+                    from the plan, hands it to the AI Coder, verifies the result with automated checks,
+                    and has the AI Reviewer decide what to do next.
+                </p>
+                <p>
+                    Each completed task is marked done in PLAN.md, recorded in LEARNINGS.md,
+                    synced to STORIES.md, and committed to the feature branch.
+                    The loop continues until every task in the plan is complete.
+                </p>
+            </div>
+        </div>
+
+        <!-- Build loop cards -->
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 24px;">
+            <div class="card" style="border-top: 3px solid var(--accent);">
+                <h3>📋 Pick Task</h3>
+                <p>Selects the next uncompleted task from the execution contract. Resets attempt counters for fresh tasks.</p>
+            </div>
+            <div class="card" style="border-top: 3px solid var(--cyan);">
+                <h3>🤖 AI Codes It</h3>
+                <p>Cline CLI writes code inside the container — creating files, installing packages, running builds. Just like a real developer.</p>
+            </div>
+            <div class="card" style="border-top: 3px solid var(--green);">
+                <h3>✅ Verify</h3>
+                <p>Runs validation commands (e.g. <code>npm run build</code>) to check if the code compiles and tests pass.</p>
+            </div>
+            <div class="card" style="border-top: 3px solid var(--purple);">
+                <h3>🔍 Review</h3>
+                <p>AI Reviewer classifies the result as SUCCESS, BLOCKER, or AMBIGUITY and decides next action.</p>
+            </div>
+        </div>
+
+        <!-- Self-healing -->
+        <div style="margin-top: 40px;">
+            <h3 style="font-size: 1.2rem; margin-bottom: 20px;">🔄 Self-Healing: What happens when something fails</h3>
+            <p style="color: var(--text-muted); margin-bottom: 24px;">
+                The system is designed to fix problems on its own. Issues escalate through four levels,
+                each more powerful than the last. You're only asked to step in as a last resort.
+            </p>
+            <div class="retry-ladder">
+                <div class="retry-step">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <div class="retry-dot" style="background: var(--green);"></div>
+                        <div class="retry-line"></div>
+                    </div>
+                    <div class="retry-body">
+                        <h4><span class="pill c-green">Level 1</span> &nbsp;Quick Retry</h4>
+                        <p>The verification step automatically re-runs the same task up to 2 times. Most transient failures (flaky builds, network timeouts) resolve here.</p>
+                    </div>
+                </div>
+                <div class="retry-step">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <div class="retry-dot" style="background: var(--yellow);"></div>
+                        <div class="retry-line"></div>
+                    </div>
+                    <div class="retry-body">
+                        <h4><span class="pill c-yellow">Level 2</span> &nbsp;Smart Fix</h4>
+                        <p>The AI Coder gets the error context injected into its prompt and tries to fix the issue itself — up to 2 more attempts. This catches import errors, type mismatches, and small logic bugs.</p>
+                    </div>
+                </div>
+                <div class="retry-step">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <div class="retry-dot" style="background: var(--orange);"></div>
+                        <div class="retry-line"></div>
+                    </div>
+                    <div class="retry-body">
+                        <h4><span class="pill c-orange">Level 3</span> &nbsp;Re-plan</h4>
+                        <p>The Architect AI is called in to revise the approach — it sees the workspace state, git diff, and failure details. It produces a plan delta with a new strategy. Up to 2 escalations.</p>
+                    </div>
+                </div>
+                <div class="retry-step">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <div class="retry-dot" style="background: var(--red);"></div>
+                    </div>
+                    <div class="retry-body">
+                        <h4><span class="pill c-red">Level 4</span> &nbsp;Ask You</h4>
+                        <p>After exhausting all automatic retries, the system freezes and asks for your guidance. You can provide feedback, adjust the plan, or skip the task.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="connector">↓</div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 4: Preview                                          -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-purple">4</div>
+            <div>
+                <h2>Live Preview</h2>
+                <div class="stage-sub">Your app runs live — you interact with it before anything ships</div>
+            </div>
+        </div>
+        <div class="stage-content">
+            <div class="stage-text">
+                <p>
+                    Once every task is complete, Automatron starts a <strong>live preview server</strong>
+                    inside the Docker container. The app is accessible via a URL in your browser —
+                    you can click around, test features, and verify everything works.
+                </p>
+                <p>
+                    Before the preview launches, the system validates that all required deployment
+                    artifacts exist: Dockerfile, environment config, CI/CD workflows, and deploy documentation.
+                </p>
+                <p>
+                    This is <strong>your second and final approval</strong>. If the preview looks good,
+                    you approve it and the code moves to the next stage. If something needs fixing,
+                    you can request changes.
+                </p>
+            </div>
+            <div>
+                <div class="card" style="margin-bottom: 16px;">
+                    <h3>🖥 What happens</h3>
+                    <ul>
+                        <li>Workspace contract validated (all artifacts present)</li>
+                        <li>Preview server started (<code>npm run dev</code> or similar)</li>
+                        <li>Readiness probe polls until the app responds</li>
+                        <li>Preview URL generated and shown in the UI</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3>⏸ Your second approval</h3>
+                    <p>You interact with the live app and decide: approve for deployment or request changes.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="connector">↓</div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 5: Ready to Ship                                    -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-cyan">5</div>
+            <div>
+                <h2>Ready to Ship</h2>
+                <div class="stage-sub">Code is merged and prepared for deployment</div>
+            </div>
+        </div>
+        <div class="stage-content">
+            <div class="stage-text">
+                <p>
+                    After you approve the preview, the feature branch is automatically
+                    <strong>merged into the develop branch</strong> on GitHub. The code is now
+                    in a stable, deploy-ready state.
+                </p>
+                <p>
+                    At this point you can review the full git history, check the CI results,
+                    and deploy whenever you're ready.
+                </p>
+            </div>
+            <div>
+                <div class="card">
+                    <h3>🔀 What happens</h3>
+                    <ul>
+                        <li>Feature branch merged into develop</li>
+                        <li>All commits preserved in git history</li>
+                        <li>Project status set to "ready for deploy"</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="connector">↓</div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- STAGE 6: Deploy                                           -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number c-orange">6</div>
+            <div>
+                <h2>Deploy</h2>
+                <div class="stage-sub">One click to go live via GitHub Actions</div>
+            </div>
+        </div>
+        <div class="stage-content">
+            <div class="stage-text">
+                <p>
+                    When you're ready, click <strong>Deploy</strong>. Automatron merges
+                    the develop branch into <code>main</code> and triggers the GitHub Actions
+                    CI/CD pipeline. The system monitors the deployment and updates the
+                    project status in real time.
+                </p>
+                <p>
+                    The deploy workflow, Dockerfile, and environment config were all
+                    generated during the build phase — everything is pre-configured.
+                </p>
+            </div>
+            <div>
+                <div class="card">
+                    <h3>🚀 Deployment steps</h3>
+                    <ul>
+                        <li>Develop branch merged into main</li>
+                        <li>GitHub Actions CI workflow triggered</li>
+                        <li>Deploy workflow runs (Docker build + push)</li>
+                        <li>Status tracked in real time via the UI</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- Real-time Events                                          -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="stage">
+        <div class="stage-header">
+            <div class="stage-number" style="background: var(--surface-2); color: var(--text-muted);">💬</div>
+            <div>
+                <h2>Real-Time Updates</h2>
+                <div class="stage-sub">WebSocket events keep the UI in sync throughout the entire process</div>
+            </div>
+        </div>
+        <div style="overflow-x: auto;">
+            <table class="events-table">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th>When it fires</th>
+                        <th>What you see</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>architect:message</td>
+                        <td>Architect is generating the plan</td>
+                        <td>Plan text streams into the UI in real time, token by token</td>
+                    </tr>
+                    <tr>
+                        <td>status:update</td>
+                        <td>Any stage or progress change</td>
+                        <td>Progress bar updates, stage label changes</td>
+                    </tr>
+                    <tr>
+                        <td>builder:log</td>
+                        <td>Builder finishes a task attempt</td>
+                        <td>Task result card appears with output and status</td>
+                    </tr>
+                    <tr>
+                        <td>plan:updated</td>
+                        <td>Task completed or plan revised</td>
+                        <td>PLAN.md refreshes with updated checkboxes</td>
+                    </tr>
+                    <tr>
+                        <td>human:required</td>
+                        <td>System needs your input</td>
+                        <td>Notification appears, action buttons enabled</td>
+                    </tr>
+                    <tr>
+                        <td>run:error</td>
+                        <td>Orchestrator encounters a crash</td>
+                        <td>Error card appears in the build log with details</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- Full Mermaid Diagram                                      -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <section class="diagram-section">
+        <h2>Full Process Diagram</h2>
+        <p class="intro">The complete flow from idea to deployed app, including all retry and escalation paths.</p>
+        <div class="diagram-wrapper">
+            <pre class="mermaid">
+flowchart TD
+    %% ================================================================
+    %% HOW PROJECT AUTOMATRON WORKS — from idea to deployed app
+    %% ================================================================
+
+    %% ── You start here ──────────────────────────────────────────────
+    USER(["👤 You describe your project idea\n(e.g. 'Build me an invoice dashboard\nwith Next.js and Tailwind')"])
+
+    PREFLIGHT{"System checks:\nDocker running?\nAPI keys valid?\nModel available?"}
+
+    USER --> PREFLIGHT
+    PREFLIGHT -- "Something is missing" --> FIX_IT(["Fix the issue\nand try again"])
+    PREFLIGHT -- "All good!" --> ARCHITECT
+
+    %% ── STAGE 1: The AI designs your project ───────────────────────
+    %% The Architect AI reads your description and creates a complete
+    %% technical plan: what to build, in what order, using which tools.
+    %% It also generates project documentation automatically.
+
+    subgraph PLANNING ["  Stage 1 — AI Plans Your Project  "]
+        ARCHITECT["🧠 Architect AI\n\nReads your description and creates:\n• A step-by-step build plan\n• Technology choices\n• Task breakdown\n• Project documentation\n(PRD, Architecture, Stories)"]
+
+        PLAN_REVIEW(["⏸ Your Review\n\nYou see the plan and can:\n✅ Approve it\n✏️ Request changes"])
+    end
+
+    ARCHITECT -- "Plan ready for review" --> PLAN_REVIEW
+    PLAN_REVIEW -- "Looks good!" --> REPO_PREPARE
+    PLAN_REVIEW -- "Needs changes" --> ARCHITECT
+
+    %% ── STAGE 2: Setting up the workspace ───────────────────────────
+    %% Automatron creates a GitHub repository and spins up a Docker
+    %% container — a clean, isolated environment where the AI builder
+    %% will write and test all the code safely.
+
+    subgraph SETUP ["  Stage 2 — Setting Up the Workspace  "]
+        REPO_PREPARE["📦 Create Repository\n\nSets up a GitHub repo with\nproper branch structure\n(main → develop → feature)"]
+
+        SCAFFOLD["🏗 Scaffold Project\n\nSpins up a sandboxed container\nand bootstraps the project:\n• Installs framework (Next.js, etc.)\n• Creates folder structure\n• Writes initial config files\n• Generates project docs"]
+    end
+
+    REPO_PREPARE --> SCAFFOLD
+    SCAFFOLD --> PICK_TASK
+
+    %% ── STAGE 3: Building — one task at a time ──────────────────────
+    %% This is the core loop. The system picks one task, an AI coder
+    %% builds it, automated tests verify the result, and a reviewer
+    %% decides if it passed. If something breaks, it retries
+    %% automatically before asking for help.
+
+    subgraph BUILD_LOOP ["  Stage 3 — Building (one task at a time)  "]
+
+        PICK_TASK["📋 Pick Next Task\n\nSelects the next uncompleted\ntask from the plan"]
+
+        AI_CODER["🤖 AI Coder\n\nWrites code inside the\nsandboxed container.\nCan create files, install\npackages, run commands —\njust like a developer would."]
+
+        TEST["✅ Verify\n\nRuns automated checks:\n• Does it compile?\n• Do tests pass?\n• Does the build succeed?"]
+
+        REVIEW["🔍 Review Results\n\nAI reviewer checks:\n• Did the task succeed?\n• Are there issues?\n• Is it fixable or stuck?\n\nOn success:\n• Marks task complete ✅\n• Records what was learned\n• Commits code to Git"]
+
+        STUCK(["🧊 Stuck\n\nToo many failures.\nNeeds your help."])
+    end
+
+    PICK_TASK -- "Task found" --> AI_CODER
+    AI_CODER --> TEST
+
+    %% When checks pass, the reviewer evaluates the overall result
+    TEST -- "Checks pass" --> REVIEW
+
+    %% When checks fail, the system retries up to 2 times automatically
+    %% before involving the reviewer for a deeper diagnosis
+    TEST -- "Checks fail\n(auto-retry, up to 2x)" --> AI_CODER
+    TEST -- "Still failing\nafter retries" --> REVIEW
+
+    %% If the reviewer says it worked — move on to the next task
+    REVIEW -- "Task completed! ✅" --> PICK_TASK
+
+    %% If the issue is small, the AI coder tries to fix it itself
+    REVIEW -- "Small issue —\nAI tries to fix it\n(up to 2 attempts)" --> AI_CODER
+
+    %% If the AI coder can't fix it, escalate to the Architect
+    %% to re-think the approach for this task
+    REVIEW -- "Needs re-planning" --> ARCHITECT
+
+    %% If even the Architect can't solve it after 2 tries, freeze
+    REVIEW -- "Repeatedly stuck" --> STUCK
+    STUCK -- "You provide guidance" --> PLAN_REVIEW
+
+    %% Architect can also produce a fix and send it straight back
+    %% to the builder without needing your approval
+    ARCHITECT -- "Updated plan\n(auto-retry)" --> PICK_TASK
+
+    %% ── STAGE 4: Live Preview ───────────────────────────────────────
+    %% Once every task is done, the system starts a live preview
+    %% server so you can see and interact with the actual application
+    %% before it goes live.
+
+    subgraph PREVIEW ["  Stage 4 — Live Preview  "]
+        START_PREVIEW["🖥 Start Preview Server\n\nLaunches the app inside\nthe container and makes\nit accessible via a URL"]
+
+        YOUR_REVIEW(["⏸ Your Review\n\nYou interact with the live app:\n✅ Approve for deployment\n✏️ Request changes"])
+    end
+
+    PICK_TASK -- "All tasks done! 🎉" --> START_PREVIEW
+    START_PREVIEW --> YOUR_REVIEW
+
+    %% ── STAGE 5: Ready to Ship ──────────────────────────────────────
+    %% After you approve the preview, the code is merged and prepared
+    %% for deployment.
+
+    subgraph SHIP ["  Stage 5 — Ready to Ship  "]
+        MERGE["🔀 Merge Code\n\nMerges all changes from\nthe feature branch into\nthe develop branch"]
+        COMPLETE(["✅ Project Complete!\n\nCode is merged and\nready to deploy"])
+    end
+
+    YOUR_REVIEW -- "Approved! 🎉" --> MERGE --> COMPLETE
+
+    %% ── STAGE 6: Deployment ─────────────────────────────────────────
+    %% You trigger deployment when you're ready. Automatron merges
+    %% to the main branch and kicks off CI/CD via GitHub Actions.
+
+    subgraph DEPLOY ["  Stage 6 — Deploy (when you're ready)  "]
+        DEPLOY_BTN["🚀 You click Deploy"]
+        GO_LIVE["Merges to main branch\nand triggers CI/CD pipeline\n(GitHub Actions)"]
+        LIVE(["🎉 Your App is Live!"])
+    end
+
+    COMPLETE -- "When you're ready" --> DEPLOY_BTN
+    DEPLOY_BTN --> GO_LIVE --> LIVE
+
+    %% ── Real-time Updates ───────────────────────────────────────────
+    %% Throughout the entire process, you see live updates in the UI:
+    %% streaming AI responses, task progress, build logs, and errors.
+
+    subgraph REALTIME ["  💬 Real-Time Updates (throughout)  "]
+        RT1["You see the AI thinking in real time\nas it writes the plan"]
+        RT2["Progress bar shows tasks\ncompleted out of total"]
+        RT3["Build logs show what the\nAI coder is doing"]
+        RT4["You're notified when\nyour input is needed"]
+    end
+
+    %% ── How the retry system works ──────────────────────────────────
+    %% The system is designed to be resilient. Small issues are fixed
+    %% automatically. Bigger problems escalate step by step before
+    %% asking you to step in.
+
+    subgraph RETRY_INFO ["  🔄 Self-Healing: How Retries Work  "]
+        R1["Level 1: Quick fix — verify step\nretries the same task (up to 2x)"]
+        R2["Level 2: Smart fix — AI coder\nretries with error context (up to 2x)"]
+        R3["Level 3: Re-plan — Architect AI\nrevises the approach (up to 2x)"]
+        R4["Level 4: Ask human — you step in\nwith guidance to unblock"]
+        R1 --> R2 --> R3 --> R4
+    end
+
+    %% ── Styling ─────────────────────────────────────────────────────
+    style PLANNING fill:#e8f4fd,stroke:#4a9eda
+    style SETUP fill:#e8fde8,stroke:#4ada7a
+    style BUILD_LOOP fill:#fdf5e8,stroke:#daa44a
+    style PREVIEW fill:#f5e8fd,stroke:#9a4ada
+    style SHIP fill:#e8fde8,stroke:#4ada7a
+    style DEPLOY fill:#fde8f5,stroke:#da4a9a
+    style REALTIME fill:#f0f0f0,stroke:#999
+    style RETRY_INFO fill:#f9f9f9,stroke:#ccc
+    style FIX_IT fill:#ffcccc,stroke:#cc0000
+    style STUCK fill:#ffcccc,stroke:#cc0000
+    style COMPLETE fill:#ccffcc,stroke:#00aa00
+    style LIVE fill:#ccffcc,stroke:#00aa00
+    style PLAN_REVIEW fill:#fff3cc,stroke:#ccaa00
+    style YOUR_REVIEW fill:#fff3cc,stroke:#ccaa00
+            </pre>
+        </div>
+    </section>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- FOOTER                                                        -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<footer>
+    <p>Project Automatron &mdash; Autonomous Software Builder</p>
+    <p style="margin-top: 8px;">
+        <a href="https://github.com/dev-quitcode/project-automatron-vmark">GitHub</a>
+    </p>
+</footer>
+
+<script>
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: 'dark',
+        themeVariables: {
+            primaryColor: '#1a1d27',
+            primaryTextColor: '#e4e6f0',
+            primaryBorderColor: '#2e3347',
+            lineColor: '#6c8cff',
+            secondaryColor: '#232736',
+            tertiaryColor: '#1a1d27',
+            fontFamily: '-apple-system, BlinkMacSystemFont, Inter, sans-serif',
+        },
+        flowchart: {
+            curve: 'basis',
+            padding: 20,
+        }
+    });
+</script>
+
+</body>
+</html>

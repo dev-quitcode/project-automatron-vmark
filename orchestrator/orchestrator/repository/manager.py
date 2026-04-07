@@ -14,7 +14,6 @@ import httpx
 
 from orchestrator.config import settings
 from orchestrator.github_actions.manager import GitHubActionsManager
-from orchestrator.validation.workspace import StackValidatorResult, validate_workspace_contract
 
 logger = logging.getLogger(__name__)
 
@@ -247,21 +246,6 @@ class RepositoryManager:
         sha = self._git(workspace, ["rev-parse", "HEAD"]).stdout.strip()
         self._git(workspace, ["checkout", source_branch], check=False)
         return sha
-
-    def validate_deploy_artifacts(
-        self,
-        project_id: str,
-        *,
-        stack_config: dict[str, Any] | None = None,
-        container_manager: Any | None = None,
-        container_id: str | None = None,
-        require_heavy_checks: bool = False,
-    ) -> StackValidatorResult:
-        workspace = self.workspace_path(project_id)
-        return validate_workspace_contract(
-            workspace,
-            stack_config=stack_config,
-        )
 
     def ensure_deploy_supporting_docs(self, project_id: str, project_name: str) -> None:
         workspace = self.workspace_path(project_id)

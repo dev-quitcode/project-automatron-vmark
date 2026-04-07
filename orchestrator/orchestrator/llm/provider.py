@@ -18,10 +18,29 @@ logger = logging.getLogger(__name__)
 litellm.set_verbose = False
 
 
+_MODEL_MAX_OUTPUT: dict[str, int] = {
+    "gpt-4-turbo": 4096,
+    "gpt-4-turbo-2024-04-09": 4096,
+    "gpt-4-0125-preview": 4096,
+    "gpt-4-1106-preview": 4096,
+    "gpt-4-0613": 4096,
+    "gpt-4": 4096,
+}
+
+
+def _cap_max_tokens(model: str, max_tokens: int) -> int:
+    """Clamp max_tokens to the model's output limit."""
+    bare = (model or "").strip().lower().split("/")[-1]
+    cap = _MODEL_MAX_OUTPUT.get(bare)
+    if cap:
+        return min(max_tokens, cap)
+    return max_tokens
+
+
 def _completion_kwargs(model: str, *, temperature: float, max_tokens: int, stream: bool = False) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
-        "max_tokens": max_tokens,
+        "max_tokens": _cap_max_tokens(model, max_tokens),
     }
     normalized = (model or "").strip().lower()
     # GPT-5 Codex variants reject non-default temperature values; use the provider-supported value.

@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   DeployRun,
   DeployTargetRequest,
+  GithubIssue,
   PlanProgress,
   Project,
   ProjectLlmConfig,
@@ -17,6 +18,7 @@ interface ProjectState {
   chatMessages: ChatMessage[];
   builderLogs: BuilderLog[];
   deployRuns: DeployRun[];
+  issues: GithubIssue[];
   planMd: string | null;
   isConnected: boolean;
   isLoading: boolean;
@@ -45,12 +47,14 @@ interface ProjectState {
     stage?: ProjectStage | null
   ) => void;
   setProgress: (progress: PlanProgress | null) => void;
+  setIssues: (issues: GithubIssue[]) => void;
+  updateIssue: (issue: GithubIssue) => void;
 
   fetchProjects: () => Promise<void>;
   fetchProject: (id: string) => Promise<void>;
   createProject: (
     name: string,
-    intakeText: string,
+    repoUrl: string,
     llmConfig: ProjectLlmConfig
   ) => Promise<Project>;
   startProject: (id: string) => Promise<void>;
@@ -70,6 +74,9 @@ interface ProjectState {
     projectId: string,
     target: DeployTargetRequest
   ) => Promise<void>;
+  fetchIssues: (projectId: string) => Promise<void>;
+  syncIssues: (projectId: string) => Promise<void>;
+  triggerPRReview: (projectId: string, issueNumber: number, prNumber: number) => Promise<void>;
 }
 
 function getHumanReason(stage?: ProjectStage | null): string | null {
@@ -99,6 +106,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   chatMessages: [],
   builderLogs: [],
   deployRuns: [],
+  issues: [],
   planMd: null,
   isConnected: false,
   isLoading: false,
@@ -149,6 +157,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       humanStage: required ? stage || null : null,
     }),
   setProgress: (progress) => set({ progress }),
+  setIssues: (issues) => set({ issues }),
+  updateIssue: (issue) =>
+    set((state) => ({
+      issues: state.issues.some((i) => i.id === issue.id)
+        ? state.issues.map((i) => (i.id === issue.id ? issue : i))
+        : [...state.issues, issue],
+    })),
 
   fetchProjects: async () => {
     set({ isLoading: true, error: null });
@@ -186,12 +201,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  createProject: async (name, intakeText, llmConfig) => {
+  createProject: async (name, repoUrl, llmConfig) => {
     set({ isLoading: true, error: null });
     try {
       const project = await api.createProject({
         name,
-        intake_text: intakeText,
+        repo_url: repoUrl,
         source: "manual",
         llm_config: llmConfig,
       });
@@ -402,6 +417,33 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } catch (error: any) {
       set({ error: error.message });
       throw error;
+    }
+  },
+
+  fetchIssues: async (projectId) => {
+    try {
+      const issues = await api.getIssues(projectId);
+      set({ issues });
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  syncIssues: async (projectId) => {
+    try {
+      await api.syncIssues(projectId);
+      const issues = await api.getIssues(projectId);
+      set({ issues });
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  triggerPRReview: async (projectId, issueNumber, prNumber) => {
+    try {
+      await api.reviewPR(projectId, issueNumber, prNumber);
+    } catch (error: any) {
+      set({ error: error.message });
     }
   },
 }));

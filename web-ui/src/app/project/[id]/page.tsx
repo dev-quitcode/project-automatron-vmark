@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import * as api from "@/lib/api";
 import { AppLayout } from "@/components/layout";
 import { ChatPanel } from "@/components/project/ChatPanel";
+import { IssuesBoard } from "@/components/project/IssuesBoard";
 import { PlanEditor } from "@/components/project/PlanEditor";
 import {
   cloneProjectLlmConfig,
@@ -36,7 +37,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-type ActiveTab = "chat" | "plan" | "logs" | "deploy";
+type ActiveTab = "chat" | "plan" | "issues" | "logs" | "deploy";
 
 const stageGroups: { id: ProjectStage; label: string; group: string }[] = [
   { id: "intake", label: "Intake", group: "Intake" },
@@ -62,7 +63,9 @@ export default function ProjectPage() {
   const router = useRouter();
   const projectId = params.id as string;
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("plan");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("issues");
+  const [isSyncingIssues, setIsSyncingIssues] = useState(false);
+  const [reviewingIssues, setReviewingIssues] = useState<Set<number>>(new Set());
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -95,6 +98,7 @@ export default function ProjectPage() {
     chatMessages,
     builderLogs,
     deployRuns,
+    issues,
     planMd,
     humanRequired,
     humanReason,
@@ -103,6 +107,7 @@ export default function ProjectPage() {
     progress,
     fetchChatHistory,
     fetchDeployRuns,
+    fetchIssues,
     fetchLogs,
     fetchPlan,
     fetchProject,
@@ -112,7 +117,9 @@ export default function ProjectPage() {
     approvePreview,
     deployProject,
     syncCicd,
+    syncIssues,
     restartPreview,
+    triggerPRReview,
     updateDeployTarget,
     updateProjectLlmConfig,
     updatePlan,
@@ -151,10 +158,12 @@ export default function ProjectPage() {
     void fetchLogs(projectId);
     void fetchDeployRuns(projectId);
     void fetchPlan(projectId);
+    void fetchIssues(projectId);
     void syncCicd(projectId);
   }, [
     fetchChatHistory,
     fetchDeployRuns,
+    fetchIssues,
     fetchLogs,
     fetchPlan,
     fetchProject,
@@ -207,6 +216,28 @@ export default function ProjectPage() {
   };
 
   const handleSavePlan = (nextPlanMd: string) => updatePlan(projectId, nextPlanMd);
+
+  const handleSyncIssues = async () => {
+    setIsSyncingIssues(true);
+    try {
+      await syncIssues(projectId);
+    } finally {
+      setIsSyncingIssues(false);
+    }
+  };
+
+  const handleReviewPR = async (issueNumber: number, prNumber: number) => {
+    setReviewingIssues((prev) => new Set(prev).add(issueNumber));
+    try {
+      await triggerPRReview(projectId, issueNumber, prNumber);
+    } finally {
+      setReviewingIssues((prev) => {
+        const next = new Set(prev);
+        next.delete(issueNumber);
+        return next;
+      });
+    }
+  };
 
   const handleSaveLlmConfig = async () => {
     setIsSavingLlmConfig(true);
@@ -752,7 +783,7 @@ export default function ProjectPage() {
         </div>
 
       <div className="mb-4 flex gap-1 rounded-lg border border-border bg-muted p-1">
-        {(["chat", "plan", "logs", "deploy"] as ActiveTab[]).map((tab) => (
+        {(["chat", "plan", "issues", "logs", "deploy"] as ActiveTab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -763,6 +794,11 @@ export default function ProjectPage() {
             }`}
           >
             {tab}
+            {tab === "issues" && issues.length > 0 && (
+              <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
+                {issues.length}
+              </span>
+            )}
             {tab === "logs" && builderLogs.length > 0 && (
               <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
                 {builderLogs.length}
@@ -792,6 +828,18 @@ export default function ProjectPage() {
             onSave={handleSavePlan}
             readOnly={isRunning}
           />
+        )}
+
+        {activeTab === "issues" && (
+          <div className="overflow-y-auto h-full pr-1">
+            <IssuesBoard
+              issues={issues}
+              onSync={() => void handleSyncIssues()}
+              onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
+              reviewingIssues={reviewingIssues}
+              isSyncing={isSyncingIssues}
+            />
+          </div>
         )}
 
         {activeTab === "logs" && (

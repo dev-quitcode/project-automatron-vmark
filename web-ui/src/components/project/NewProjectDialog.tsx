@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/api";
 import {
   cloneProjectLlmConfig,
@@ -20,9 +20,18 @@ interface NewProjectDialogProps {
   onClose: () => void;
 }
 
+function parseRepoName(url: string): string {
+  // Extract repo name from https://github.com/owner/repo or owner/repo
+  const match = url.match(/github\.com\/[^/]+\/([^/?#\s]+)/);
+  if (match) return match[1].replace(/\.git$/, "");
+  const parts = url.trim().split("/");
+  return parts[parts.length - 1]?.replace(/\.git$/, "") ?? "";
+}
+
 export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
   const [name, setName] = useState("");
-  const [intakeText, setIntakeText] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [nameDirty, setNameDirty] = useState(false);
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -35,49 +44,54 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { createProject } = useProjectStore();
 
-  if (!open) return null;
+  const loadProviderCatalog = useCallback(
+    async (provider: LlmProvider, forceRefresh = false): Promise<ProviderModelCatalog | null> => {
+      if (!forceRefresh && providerCatalogs[provider]) {
+        return providerCatalogs[provider] ?? null;
+      }
+      setLoadingProviders((cur) => ({ ...cur, [provider]: true }));
+      try {
+        const catalog = await api.getProviderModels(provider, forceRefresh);
+        setProviderCatalogs((cur) => ({ ...cur, [provider]: catalog }));
+        return catalog;
+      } catch {
+        return null;
+      } finally {
+        setLoadingProviders((cur) => ({ ...cur, [provider]: false }));
+      }
+    },
+    [providerCatalogs]
+  );
 
-  const loadProviderCatalog = async (
-    provider: LlmProvider,
-    forceRefresh = false
-  ): Promise<ProviderModelCatalog | null> => {
-    if (!forceRefresh && providerCatalogs[provider]) {
-      return providerCatalogs[provider] ?? null;
-    }
+  useEffect(() => {
+    if (!open) return;
+    const providers = new Set<LlmProvider>(
+      Object.values(llmConfig).map((c) => c.provider)
+    );
+    providers.forEach((p) => { void loadProviderCatalog(p); });
+  }, [open]);
 
-    setLoadingProviders((current) => ({ ...current, [provider]: true }));
-    try {
-      const catalog = await api.getProviderModels(provider, forceRefresh);
-      setProviderCatalogs((current) => ({ ...current, [provider]: catalog }));
-      return catalog;
-    } catch {
-      return null;
-    } finally {
-      setLoadingProviders((current) => ({ ...current, [provider]: false }));
+  // Auto-fill project name from repo URL when the user hasn't typed a name yet
+  const handleRepoUrlChange = (value: string) => {
+    setRepoUrl(value);
+    if (!nameDirty) {
+      const suggested = parseRepoName(value);
+      if (suggested) setName(suggested);
     }
   };
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const providers = new Set<LlmProvider>(
-      Object.values(llmConfig).map((config) => config.provider)
-    );
-    providers.forEach((provider) => {
-      void loadProviderCatalog(provider);
-    });
-  }, [open]);
+  if (!open) return null;
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!name.trim() || !intakeText.trim()) return;
+    if (!name.trim() || !repoUrl.trim()) return;
 
     setIsSubmitting(true);
     try {
-      await createProject(name.trim(), intakeText.trim(), llmConfig);
+      await createProject(name.trim(), repoUrl.trim(), llmConfig);
       setName("");
-      setIntakeText("");
+      setRepoUrl("");
+      setNameDirty(false);
       setLlmConfig(cloneProjectLlmConfig(defaultProjectLlmConfig));
       onClose();
     } catch {
@@ -87,24 +101,12 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
     }
   };
 
-  const updateRoleProvider = async (
-    role: keyof ProjectLlmConfig,
-    provider: LlmProvider
-  ) => {
-    setLlmConfig((current) => ({
-      ...current,
-      [role]: {
-        provider,
-        model: "",
-      },
-    }));
+  const updateRoleProvider = async (role: keyof ProjectLlmConfig, provider: LlmProvider) => {
+    setLlmConfig((cur) => ({ ...cur, [role]: { provider, model: "" } }));
     const catalog = await loadProviderCatalog(provider);
-    setLlmConfig((current) => ({
-      ...current,
-      [role]: {
-        provider,
-        model: catalog?.models[0]?.id ?? "",
-      },
+    setLlmConfig((cur) => ({
+      ...cur,
+      [role]: { provider, model: catalog?.models[0]?.id ?? "" },
     }));
   };
 
@@ -113,66 +115,57 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
 
       <div className="relative w-full max-w-2xl rounded-xl border border-border bg-card p-6 shadow-2xl">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">New Project</h2>
+            <h2 className="text-lg font-semibold">Connect Repository</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Paste raw Solomon intake. Automatron will turn it into a
-              technical implementation plan.
+              Paste your GitHub repository URL. Automatron will read the README
+              and generate a full technical plan as GitHub Issues.
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-          >
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium">
-              Project Name
-            </label>
+            <label className="mb-1.5 block text-sm font-medium">GitHub Repository URL</label>
             <input
               type="text"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g., Client onboarding portal"
+              value={repoUrl}
+              onChange={(e) => handleRepoUrlChange(e.target.value)}
+              placeholder="https://github.com/your-org/your-repo"
               className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               autoFocus
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The repo should have a README (and optionally docs/PRD.md) describing what to build.
+            </p>
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium">
-              Solomon Intake
-            </label>
-            <textarea
-              value={intakeText}
-              onChange={(event) => setIntakeText(event.target.value)}
-              placeholder="Describe the MVP, actors, flows, constraints, and the outcome you want to demo."
-              rows={9}
-              className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            <label className="mb-1.5 block text-sm font-medium">Project Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => { setName(e.target.value); setNameDirty(true); }}
+              placeholder="e.g., Invoice Dashboard"
+              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
 
           <div className="rounded-xl border border-border bg-background/60 p-4">
-            <div>
-              <h3 className="text-sm font-semibold">LLM Configuration</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Select provider and model for planning, building, and review.
-              </p>
-            </div>
+            <h3 className="text-sm font-semibold">LLM Configuration</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Architect: plans issues. Reviewer: reviews PRs.
+            </p>
 
             <div className="mt-4 space-y-4">
-              {(["architect", "builder", "reviewer"] as const).map((role) => (
+              {(["architect", "reviewer"] as const).map((role) => (
                 <div key={role} className="grid gap-3 md:grid-cols-[160px_1fr_1.3fr]">
                   <div className="self-center text-sm font-medium capitalize">{role}</div>
 
@@ -180,16 +173,11 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
                     <span className="text-muted-foreground">Provider</span>
                     <select
                       value={llmConfig[role].provider}
-                      onChange={(event) => {
-                        const provider = event.target.value as LlmProvider;
-                        void updateRoleProvider(role, provider);
-                      }}
+                      onChange={(e) => { void updateRoleProvider(role, e.target.value as LlmProvider); }}
                       className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
                     >
-                      {llmProviders.map((provider) => (
-                        <option key={provider.value} value={provider.value}>
-                          {provider.label}
-                        </option>
+                      {llmProviders.map((p) => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
                       ))}
                     </select>
                   </label>
@@ -198,13 +186,10 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
                     <span className="text-muted-foreground">Model</span>
                     <select
                       value={llmConfig[role].model}
-                      onChange={(event) =>
-                        setLlmConfig((current) => ({
-                          ...current,
-                          [role]: {
-                            ...current[role],
-                            model: event.target.value,
-                          },
+                      onChange={(e) =>
+                        setLlmConfig((cur) => ({
+                          ...cur,
+                          [role]: { ...cur[role], model: e.target.value },
                         }))
                       }
                       className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
@@ -212,15 +197,13 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
                     >
                       <option value="">
                         {loadingProviders[llmConfig[role].provider]
-                          ? "Loading models..."
+                          ? "Loading..."
                           : modelOptionsFor(llmConfig[role].provider).length > 0
                           ? "Select model"
                           : "No models available"}
                       </option>
-                      {modelOptionsFor(llmConfig[role].provider).map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
+                      {modelOptionsFor(llmConfig[role].provider).map((m) => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
                       ))}
                     </select>
                     {providerCatalogs[llmConfig[role].provider]?.error && (
@@ -244,10 +227,10 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
             </button>
             <button
               type="submit"
-              disabled={!name.trim() || !intakeText.trim() || isSubmitting}
+              disabled={!name.trim() || !repoUrl.trim() || isSubmitting}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
-              {isSubmitting ? "Creating..." : "Create Project"}
+              {isSubmitting ? "Connecting..." : "Connect & Plan"}
             </button>
           </div>
         </form>

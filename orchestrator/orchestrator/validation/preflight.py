@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
-from docker.errors import DockerException, ImageNotFound
-
 from orchestrator.config import settings
-from orchestrator.docker_engine.manager import ContainerManager
 from orchestrator.llm.catalog import get_provider_model_catalog
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config, provider_api_key
 from orchestrator.repository.manager import RepositoryManager
@@ -49,10 +44,8 @@ class PreflightService:
     def __init__(
         self,
         *,
-        container_manager: ContainerManager | None = None,
         repository_manager: RepositoryManager | None = None,
     ) -> None:
-        self.container_manager = container_manager or ContainerManager()
         self.repository_manager = repository_manager or RepositoryManager()
 
     async def run(self, phase: PreflightPhase, *, project: dict[str, Any]) -> PreflightResult:
@@ -132,8 +125,6 @@ class PreflightService:
 
     async def _start_checks(self, project: dict[str, Any]) -> list[PreflightCheck]:
         checks: list[PreflightCheck] = []
-        checks.extend(self._docker_checks())
-        checks.extend(self._workspace_checks())
         checks.extend(self._github_configuration_checks())
         checks.extend(await self._llm_provider_checks(project))
         return checks
@@ -190,82 +181,6 @@ class PreflightService:
                     "deploy_environment_access",
                     "GitHub environment and public key are available",
                     details={"environment": environment_name, "key_id": public_key["key_id"]},
-                )
-            )
-        return checks
-
-    def _docker_checks(self) -> list[PreflightCheck]:
-        checks: list[PreflightCheck] = []
-        if not self.container_manager.client:
-            return [
-                _blocking(
-                    "docker_unavailable",
-                    "Docker client is not available",
-                    details={"golden_image": settings.golden_image},
-                )
-            ]
-
-        try:
-            self.container_manager.client.ping()
-        except DockerException as exc:
-            checks.append(
-                _blocking(
-                    "docker_daemon_unreachable",
-                    "Docker daemon is not reachable",
-                    details={"error": str(exc)},
-                )
-            )
-            return checks
-        checks.append(_ok("docker_daemon_reachable", "Docker daemon is reachable"))
-
-        try:
-            self.container_manager.client.images.get(settings.golden_image)
-        except ImageNotFound:
-            checks.append(
-                _blocking(
-                    "golden_image_missing",
-                    f"Golden image `{settings.golden_image}` was not found locally",
-                )
-            )
-        except DockerException as exc:
-            checks.append(
-                _blocking(
-                    "golden_image_lookup_failed",
-                    "Could not verify the golden image",
-                    details={"error": str(exc)},
-                )
-            )
-        else:
-            checks.append(_ok("golden_image_present", f"Golden image `{settings.golden_image}` is available"))
-        return checks
-
-    def _workspace_checks(self) -> list[PreflightCheck]:
-        checks: list[PreflightCheck] = []
-        workspace_dir = settings.workspace_base_dir
-        if workspace_dir.exists() and workspace_dir.is_dir():
-            checks.append(
-                _ok(
-                    "workspace_base_dir_valid",
-                    "Workspace base directory is valid",
-                    details={"path": str(workspace_dir)},
-                )
-            )
-        else:
-            checks.append(
-                _blocking(
-                    "workspace_base_dir_invalid",
-                    "Workspace base directory is invalid",
-                    details={"path": str(workspace_dir)},
-                )
-            )
-
-        raw_path = settings.workspace_base_path.strip()
-        if os.name == "nt" and raw_path.startswith("/"):
-            checks.append(
-                _warning(
-                    "workspace_base_dir_normalized",
-                    "WORKSPACE_BASE_PATH uses a non-Windows path and is being normalized automatically",
-                    details={"configured": raw_path, "effective": str(workspace_dir)},
                 )
             )
         return checks
