@@ -3,17 +3,22 @@
 import { useState } from "react";
 import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
-import { RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { ExternalLink, RefreshCw, ChevronDown, ChevronRight, ScanSearch } from "lucide-react";
 
 interface IssuesBoardProps {
   issues: GithubIssue[];
+  repoUrl: string | null;
   onSync: () => void;
+  onAudit: () => void;
   onReview: (issueNumber: number, prNumber: number) => void;
+  onAssignCopilot: (issueNumber: number) => void;
   reviewingIssues: Set<number>;
+  assigningIssues: Set<number>;
   isSyncing: boolean;
+  isAuditing: boolean;
 }
 
-export function IssuesBoard({ issues, onSync, onReview, reviewingIssues, isSyncing }: IssuesBoardProps) {
+export function IssuesBoard({ issues, repoUrl, onSync, onAudit, onReview, onAssignCopilot, reviewingIssues, assigningIssues, isSyncing, isAuditing }: IssuesBoardProps) {
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set());
 
   const toggleEpic = (epic: string) => {
@@ -36,6 +41,13 @@ export function IssuesBoard({ issues, onSync, onReview, reviewingIssues, isSynci
     (i) => i.status === "merged" || i.status === "closed"
   ).length;
 
+  const openCount = issues.filter((i) => i.status === "open").length;
+
+  // Derive repo issues URL from repoUrl or first issue's copilot_workspace_url
+  const repoIssuesUrl = repoUrl
+    ? `${repoUrl.replace(/\.git$/, "")}/issues`
+    : issues[0]?.copilot_workspace_url?.replace(/\/issues\/\d+$/, "/issues") ?? null;
+
   if (issues.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
@@ -48,19 +60,41 @@ export function IssuesBoard({ issues, onSync, onReview, reviewingIssues, isSynci
   return (
     <div className="space-y-4">
       {/* Header row */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           {totalDone}/{issues.length} tasks done
         </p>
-        <button
-          onClick={onSync}
-          disabled={isSyncing}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
-        >
-          <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
-          {isSyncing ? "Syncing..." : "Sync from GitHub"}
-        </button>
+        <div className="flex items-center gap-2">
+          {repoIssuesUrl && (
+            <a
+              href={repoIssuesUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Open Issues on GitHub
+            </a>
+          )}
+          <button
+            onClick={onAudit}
+            disabled={isAuditing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            <ScanSearch className={`h-3 w-3 ${isAuditing ? "animate-pulse" : ""}`} />
+            {isAuditing ? "Auditing..." : "Audit Code"}
+          </button>
+          <button
+            onClick={onSync}
+            disabled={isSyncing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
+            {isSyncing ? "Syncing..." : "Sync from GitHub"}
+          </button>
+        </div>
       </div>
+
 
       {/* Progress bar */}
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -115,7 +149,9 @@ export function IssuesBoard({ issues, onSync, onReview, reviewingIssues, isSynci
                     key={issue.id}
                     issue={issue}
                     onReview={onReview}
+                    onAssignCopilot={onAssignCopilot}
                     isReviewing={reviewingIssues.has(issue.issue_number)}
+                    isAssigning={assigningIssues.has(issue.issue_number)}
                   />
                 ))}
               </div>

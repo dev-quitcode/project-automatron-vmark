@@ -55,7 +55,8 @@ interface ProjectState {
   createProject: (
     name: string,
     repoUrl: string,
-    llmConfig: ProjectLlmConfig
+    llmConfig: ProjectLlmConfig,
+    figmaUrls?: string[]
   ) => Promise<Project>;
   startProject: (id: string) => Promise<void>;
   stopProject: (id: string) => Promise<void>;
@@ -76,6 +77,9 @@ interface ProjectState {
   ) => Promise<void>;
   fetchIssues: (projectId: string) => Promise<void>;
   syncIssues: (projectId: string) => Promise<void>;
+  auditProject: (projectId: string) => Promise<void>;
+  assignToCopilot: (projectId: string) => Promise<{ assigned: number; failed: number }>;
+  assignIssueToCopilot: (projectId: string, issueNumber: number) => Promise<void>;
   triggerPRReview: (projectId: string, issueNumber: number, prNumber: number) => Promise<void>;
 }
 
@@ -201,7 +205,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  createProject: async (name, repoUrl, llmConfig) => {
+  createProject: async (name, repoUrl, llmConfig, figmaUrls) => {
     set({ isLoading: true, error: null });
     try {
       const project = await api.createProject({
@@ -209,6 +213,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         repo_url: repoUrl,
         source: "manual",
         llm_config: llmConfig,
+        figma_urls: figmaUrls?.filter(Boolean) ?? [],
       });
       set((state) => ({
         projects: [...state.projects, project],
@@ -434,6 +439,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       await api.syncIssues(projectId);
       const issues = await api.getIssues(projectId);
       set({ issues });
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  auditProject: async (projectId) => {
+    try {
+      await api.auditProject(projectId);
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  assignToCopilot: async (projectId) => {
+    const result = await api.assignToCopilot(projectId);
+    const issues = await api.getIssues(projectId);
+    set({ issues });
+    return result;
+  },
+
+  assignIssueToCopilot: async (projectId, issueNumber) => {
+    try {
+      await api.assignIssueToCopilot(projectId, issueNumber);
     } catch (error: any) {
       set({ error: error.message });
     }

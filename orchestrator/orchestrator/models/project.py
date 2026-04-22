@@ -62,6 +62,8 @@ PROJECT_COLUMN_DEFS: dict[str, str] = {
     "github_repo_owner": "TEXT",
     "github_repo_name": "TEXT",
     "issue_plan_json": "TEXT",
+    "figma_urls_json": "TEXT NOT NULL DEFAULT '[]'",
+    "figma_file_context": "TEXT NOT NULL DEFAULT ''",
 }
 
 JSON_FIELDS = {
@@ -76,6 +78,8 @@ JSON_FIELDS = {
     "deploy_target_json",
     "preview_metadata_json",
     "approval_history_json",
+    "issue_plan_json",
+    "figma_urls_json",
 }
 BOOL_FIELDS = {"repo_ready", "plan_approved", "preview_approved"}
 JSON_FIELD_DEFAULTS: dict[str, Any] = {
@@ -90,6 +94,8 @@ JSON_FIELD_DEFAULTS: dict[str, Any] = {
     "deploy_target_json": {},
     "preview_metadata_json": {},
     "approval_history_json": [],
+    "issue_plan_json": {},
+    "figma_urls_json": [],
 }
 
 
@@ -318,6 +324,21 @@ async def init_db(db_path: str) -> None:
 
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL,
+                seq         INTEGER NOT NULL,
+                task_text   TEXT NOT NULL,
+                output      TEXT,
+                status      TEXT NOT NULL DEFAULT 'INFO',
+                created_at  TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """
+        )
+
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS github_issues (
                 id          TEXT PRIMARY KEY,
                 project_id  TEXT NOT NULL,
@@ -349,6 +370,9 @@ async def create_project(
     intake_source: str = "manual",
     source_ref: str | None = None,
     llm_config: dict[str, Any] | None = None,
+    github_repo_owner: str | None = None,
+    github_repo_name: str | None = None,
+    figma_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a new project record."""
     await _ensure_db_ready()
@@ -373,10 +397,13 @@ async def create_project(
                 deploy_status,
                 github_environment_name,
                 approval_history_json,
+                github_repo_owner,
+                github_repo_name,
+                figma_urls_json,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, 'pending', 'intake', ?, ?, ?, '', '{}', ?, 'pending', 'not_configured', 'not_configured', ?, '[]', ?, ?)
+            VALUES (?, ?, 'pending', 'intake', ?, ?, ?, '', '{}', ?, 'pending', 'not_configured', 'not_configured', ?, '[]', ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -386,6 +413,9 @@ async def create_project(
                 source_ref,
                 _json_dumps(normalized_llm_config),
                 settings.github_environment_name,
+                github_repo_owner,
+                github_repo_name,
+                _json_dumps(figma_urls or []),
                 now,
                 now,
             ),
@@ -927,6 +957,29 @@ async def list_github_issues(project_id: str) -> list[dict[str, Any]]:
         return result
 
 
+async def find_github_issue_by_repo(
+    owner: str, repo_name: str, issue_number: int
+) -> dict[str, Any] | None:
+    """Find a github_issue record by repo owner/name + issue number (across all projects)."""
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT gi.* FROM github_issues gi
+            JOIN projects p ON gi.project_id = p.id
+            WHERE p.github_repo_owner = ? AND p.github_repo_name = ? AND gi.issue_number = ?
+            """,
+            (owner, repo_name, issue_number),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["pr_review"] = _json_loads(item.pop("pr_review_json", None), {})
+        return item
+
+
 async def update_github_issue_status(
     project_id: str, issue_number: int, status: str
 ) -> None:
@@ -989,3 +1042,34 @@ async def get_trace_events(project_id: str) -> list[dict[str, Any]]:
             item["payload"] = _json_loads(item.pop("payload_json", "{}"), {})
             result.append(item)
         return result
+
+
+async def save_activity_log(
+    project_id: str,
+    seq: int,
+    task_text: str,
+    output: str = "",
+    status: str = "INFO",
+) -> None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO activity_logs (id, project_id, seq, task_text, output, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(__import__("uuid").uuid4()), project_id, seq, task_text, output, status, _now()),
+        )
+        await db.commit()
+
+
+async def get_activity_logs(project_id: str) -> list[dict[str, Any]]:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM activity_logs WHERE project_id = ? ORDER BY seq ASC",
+            (project_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]

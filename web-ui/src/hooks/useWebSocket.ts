@@ -139,8 +139,15 @@ export function useWebSocket(projectId?: string) {
       "pr:review_ready",
       (data: { project_id: string; issue_number: number; pr_number: number; passed: boolean; summary: string }) => {
         if (projectId && data.project_id !== projectId) return;
-        // The store will refetch issues to get the updated review; use updateIssue after a full fetch
-        // For now just trigger a store refresh via setIssues with a local placeholder update
+        const { issues } = useProjectStore.getState();
+        const issue = issues.find((i) => i.issue_number === data.issue_number);
+        if (issue) {
+          updateIssue({
+            ...issue,
+            status: "pr_reviewed",
+            pr_review: { passed: data.passed, summary: data.summary, pr_number: data.pr_number },
+          });
+        }
       }
     );
 
@@ -164,8 +171,10 @@ export function useWebSocket(projectId?: string) {
     projectId,
     setConnected,
     setHumanRequired,
+    setIssues,
     setPlanMd,
     setProgress,
+    updateIssue,
   ]);
 
   useEffect(() => {

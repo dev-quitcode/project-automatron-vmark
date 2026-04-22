@@ -154,6 +154,23 @@ class GitHubClient:
             response.raise_for_status()
             return response.json()
 
+    async def trigger_copilot_agent(
+        self, owner: str, repo: str, issue_number: int
+    ) -> None:
+        """Assign copilot-swe-agent[bot] to the issue to trigger the Copilot coding agent."""
+        async with self._client(timeout=15.0) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                json={
+                    "assignees": ["copilot-swe-agent[bot]"],
+                    "agent_assignment": {
+                        "target_repo": f"{owner}/{repo}",
+                        "base_branch": "main",
+                    },
+                },
+            )
+            response.raise_for_status()
+
     async def list_issues(
         self,
         owner: str,
@@ -215,15 +232,131 @@ class GitHubClient:
     async def find_pr_for_issue(
         self, owner: str, repo: str, issue_number: int
     ) -> dict[str, Any] | None:
-        """Search open + closed PRs to find one referencing the given issue number."""
+        """Find a PR linked to the given issue.
+
+        Strategy:
+        1. Check issue timeline for cross-referenced PRs (works even when Copilot
+           doesn't write 'Closes #N' in the PR body).
+        2. Fall back to scanning PR bodies for '#N' mentions.
+        """
+        async with self._client(timeout=20.0) as client:
+            # Strategy 1 — issue timeline (most reliable)
+            resp = await client.get(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/timeline",
+                headers={"Accept": "application/vnd.github.mockingbird-preview+json"},
+                params={"per_page": 100},
+            )
+            if resp.status_code == 200:
+                for event in resp.json():
+                    if event.get("event") == "cross-referenced":
+                        source = event.get("source", {})
+                        issue_ref = source.get("issue", {})
+                        pr_url = issue_ref.get("pull_request", {}).get("url", "")
+                        if pr_url:
+                            pr_resp = await client.get(pr_url)
+                            if pr_resp.status_code == 200:
+                                return pr_resp.json()
+
+        # Strategy 2 — scan PR bodies for '#N' mention
         for state in ("open", "closed"):
             prs = await self.list_prs(owner, repo, state=state)
             for pr in prs:
                 body = (pr.get("body") or "").lower()
-                # GitHub auto-links "closes #N", "fixes #N", "resolves #N"
                 for keyword in (f"closes #{issue_number}", f"fixes #{issue_number}",
                                 f"resolves #{issue_number}", f"#{issue_number}"):
                     if keyword in body:
                         return pr
+        return None
+
+    # ── Webhooks ─────────────────────────────────────────────────────────────
+
+    async def register_webhook(self, owner: str, repo: str) -> str:
+        """Idempotently register the Automatron webhook on a GitHub repo.
+
+        Returns: "registered" | "already_exists" | "skipped" | "error: <msg>"
+        Requires AUTOMATRON_PUBLIC_URL and optionally GITHUB_WEBHOOK_SECRET in config.
+        """
+        public_url = settings.automatron_public_url.rstrip("/")
+        if not public_url:
+            return "skipped"
+
+        webhook_url = f"{public_url}/api/webhooks/github"
+
+        async with self._client(timeout=15) as client:
+            # Check for an existing hook to avoid duplicates
+            resp = await client.get(f"/repos/{owner}/{repo}/hooks")
+            if resp.status_code == 200:
+                for hook in resp.json():
+                    if hook.get("config", {}).get("url") == webhook_url:
+                        return "already_exists"
+            elif resp.status_code not in {200, 404}:
+                return f"error: list hooks {resp.status_code}"
+
+            payload: dict[str, Any] = {
+                "name": "web",
+                "active": True,
+                "events": ["pull_request"],
+                "config": {
+                    "url": webhook_url,
+                    "content_type": "json",
+                    "insecure_ssl": "0",
+                },
+            }
+            if settings.github_webhook_secret:
+                payload["config"]["secret"] = settings.github_webhook_secret
+
+            create_resp = await client.post(f"/repos/{owner}/{repo}/hooks", json=payload)
+            if create_resp.status_code == 201:
+                return "registered"
+            return f"error: {create_resp.status_code} {create_resp.text[:200]}"
+
+    # ── Deployments ──────────────────────────────────────────────────────────
+
+    async def get_preview_url_from_deployments(self, owner: str, repo: str) -> str | None:
+        """Check GitHub Deployments for a live environment URL.
+
+        Checks environments in priority order: production → preview → staging → any.
+        Returns the first successful deployment's environment_url, or None.
+        """
+        async with self._client(timeout=15) as client:
+            resp = await client.get(
+                f"/repos/{owner}/{repo}/deployments",
+                params={"per_page": 20},
+            )
+            if resp.status_code != 200:
+                return None
+
+            deployments = resp.json()
+            if not deployments:
+                return None
+
+            # Sort by priority: production first, then preview/staging, then any
+            def env_priority(d: dict) -> int:
+                env = (d.get("environment") or "").lower()
+                if env == "production":
+                    return 0
+                if env in ("preview", "staging"):
+                    return 1
+                return 2
+
+            deployments.sort(key=env_priority)
+
+            for deployment in deployments:
+                dep_id = deployment["id"]
+                statuses_resp = await client.get(
+                    f"/repos/{owner}/{repo}/deployments/{dep_id}/statuses",
+                    params={"per_page": 1},
+                )
+                if statuses_resp.status_code != 200:
+                    continue
+                statuses = statuses_resp.json()
+                if not statuses:
+                    continue
+                latest = statuses[0]
+                if latest.get("state") == "success":
+                    env_url = latest.get("environment_url") or latest.get("target_url") or ""
+                    if env_url:
+                        return env_url
+
         return None
 

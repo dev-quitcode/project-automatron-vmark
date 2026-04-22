@@ -217,6 +217,37 @@ export async function syncIssues(projectId: string): Promise<{ status: string }>
   return request(`/api/projects/${projectId}/sync-issues`, { method: "POST" });
 }
 
+export async function auditProject(projectId: string): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/audit`, { method: "POST" });
+}
+
+export async function uploadFigmaFile(
+  projectId: string,
+  file: File
+): Promise<{ status: string; chars: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/figma-file`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error(`Figma upload failed: ${await res.text()}`);
+  return res.json();
+}
+
+export async function assignToCopilot(
+  projectId: string
+): Promise<{ assigned: number; failed: number }> {
+  return request(`/api/projects/${projectId}/assign-copilot`, { method: "POST" });
+}
+
+export async function assignIssueToCopilot(
+  projectId: string,
+  issueNumber: number
+): Promise<{ assigned: number; issue_number: number }> {
+  return request(`/api/projects/${projectId}/issues/${issueNumber}/assign-copilot`, { method: "POST" });
+}
+
 export async function reviewPR(
   projectId: string,
   issueNumber: number,

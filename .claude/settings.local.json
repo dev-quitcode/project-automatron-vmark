@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(find 'd:\\\\Work\\\\Project Automatron\\\\web-ui\\\\src' -type f \\\\\\(-name *.tsx -o -name *.ts -o -name *.test.tsx -o -name *.test.ts \\\\\\))",
-      "Bash(find 'd:\\\\Work\\\\Project Automatron' -type f \\\\\\(-name *.test.ts -o -name *.test.tsx -o -name *.spec.ts -o -name *.spec.tsx \\\\\\))"
+      "Bash(find 'd:\\\\Work\\\\Project Automatron' -type f \\\\\\(-name *.test.ts -o -name *.test.tsx -o -name *.spec.ts -o -name *.spec.tsx \\\\\\))",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -m pytest tests/ -x -q)"
     ]
   }
 }

@@ -17,8 +17,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     google_api_key: str = ""
     github_token: str = ""
+    github_webhook_secret: str = ""
+    automatron_public_url: str = ""  # e.g. https://automatron.example.com — used for auto-registering webhooks
+    figma_access_token: str = ""    # Figma personal access token for reading design context
     github_owner: str = ""
     github_owner_type: str = "user"
+    github_default_org: str = ""
     github_api_url: str = "https://api.github.com"
     github_repo_visibility: str = "private"
     github_environment_name: str = "production"

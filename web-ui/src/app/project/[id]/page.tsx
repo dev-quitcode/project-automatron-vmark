@@ -37,7 +37,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-type ActiveTab = "chat" | "plan" | "issues" | "logs" | "deploy";
+type ActiveTab = "chat" | "plan" | "issues" | "preview" | "activity" | "deploy";
 
 const stageGroups: { id: ProjectStage; label: string; group: string }[] = [
   { id: "intake", label: "Intake", group: "Intake" },
@@ -65,7 +65,9 @@ export default function ProjectPage() {
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("issues");
   const [isSyncingIssues, setIsSyncingIssues] = useState(false);
+  const [isAuditing, setIsAuditing] = useState(false);
   const [reviewingIssues, setReviewingIssues] = useState<Set<number>>(new Set());
+  const [assigningIssues, setAssigningIssues] = useState<Set<number>>(new Set());
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -91,7 +93,6 @@ export default function ProjectPage() {
   });
   const [isSavingLlmConfig, setIsSavingLlmConfig] = useState(false);
   const [isSavingDeployTarget, setIsSavingDeployTarget] = useState(false);
-  const [isSyncingCicd, setIsSyncingCicd] = useState(false);
 
   const {
     currentProject,
@@ -104,6 +105,7 @@ export default function ProjectPage() {
     humanReason,
     humanStage,
     isLoading,
+    error,
     progress,
     fetchChatHistory,
     fetchDeployRuns,
@@ -116,14 +118,16 @@ export default function ProjectPage() {
     approvePlan,
     approvePreview,
     deployProject,
-    syncCicd,
     syncIssues,
+    auditProject,
     restartPreview,
     triggerPRReview,
+    assignIssueToCopilot,
     updateDeployTarget,
     updateProjectLlmConfig,
     updatePlan,
     setHumanRequired,
+    setError,
   } = useProjectStore();
   const targetSummaryKey = JSON.stringify(currentProject?.deploy_target_summary ?? null);
 
@@ -159,7 +163,6 @@ export default function ProjectPage() {
     void fetchDeployRuns(projectId);
     void fetchPlan(projectId);
     void fetchIssues(projectId);
-    void syncCicd(projectId);
   }, [
     fetchChatHistory,
     fetchDeployRuns,
@@ -168,7 +171,6 @@ export default function ProjectPage() {
     fetchPlan,
     fetchProject,
     projectId,
-    syncCicd,
   ]);
 
   useEffect(() => {
@@ -226,12 +228,34 @@ export default function ProjectPage() {
     }
   };
 
+  const handleAudit = async () => {
+    setIsAuditing(true);
+    try {
+      await auditProject(projectId);
+    } finally {
+      setIsAuditing(false);
+    }
+  };
+
   const handleReviewPR = async (issueNumber: number, prNumber: number) => {
     setReviewingIssues((prev) => new Set(prev).add(issueNumber));
     try {
       await triggerPRReview(projectId, issueNumber, prNumber);
     } finally {
       setReviewingIssues((prev) => {
+        const next = new Set(prev);
+        next.delete(issueNumber);
+        return next;
+      });
+    }
+  };
+
+  const handleAssignCopilot = async (issueNumber: number) => {
+    setAssigningIssues((prev) => new Set(prev).add(issueNumber));
+    try {
+      await assignIssueToCopilot(projectId, issueNumber);
+    } finally {
+      setAssigningIssues((prev) => {
         const next = new Set(prev);
         next.delete(issueNumber);
         return next;
@@ -282,25 +306,6 @@ export default function ProjectPage() {
       setIsSavingDeployTarget(false);
     }
   };
-
-  const handleSyncCicd = async () => {
-    setIsSyncingCicd(true);
-    try {
-      await syncCicd(projectId);
-    } finally {
-      setIsSyncingCicd(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!currentProject?.repo_name) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      void syncCicd(projectId);
-    }, 15000);
-    return () => window.clearInterval(intervalId);
-  }, [currentProject?.repo_name, projectId, syncCicd]);
 
   const isRunning = ["planning", "building"].includes(
     currentProject?.status || ""
@@ -363,6 +368,12 @@ export default function ProjectPage() {
 
   return (
     <AppLayout>
+      {error && (
+        <div className="mb-4 flex items-center justify-between rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="ml-4 shrink-0 opacity-70 hover:opacity-100">✕</button>
+        </div>
+      )}
       <div className="mb-4 flex items-center justify-between">
         <button
           onClick={() => router.push("/")}
@@ -447,17 +458,6 @@ export default function ProjectPage() {
             >
               <Rocket className="h-4 w-4" />
               Deploy
-            </button>
-          )}
-
-          {currentProject.repo_name && (
-            <button
-              onClick={() => void handleSyncCicd()}
-              disabled={isSyncingCicd}
-              className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {isSyncingCicd ? "Syncing..." : "Sync CI/CD"}
             </button>
           )}
 
@@ -783,7 +783,7 @@ export default function ProjectPage() {
         </div>
 
       <div className="mb-4 flex gap-1 rounded-lg border border-border bg-muted p-1">
-        {(["chat", "plan", "issues", "logs", "deploy"] as ActiveTab[]).map((tab) => (
+        {(["chat", "plan", "issues", "preview", "activity", "deploy"] as ActiveTab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -799,11 +799,17 @@ export default function ProjectPage() {
                 {issues.length}
               </span>
             )}
-            {tab === "logs" && builderLogs.length > 0 && (
-              <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
-                {builderLogs.length}
-              </span>
+            {tab === "preview" && currentProject.preview_url && (
+              <span className="ml-1.5 rounded-full bg-green-500/10 px-1.5 py-0.5 text-xs text-green-500">live</span>
             )}
+            {tab === "activity" && builderLogs.length > 0 && (() => {
+              const isLive = builderLogs.at(-1)?.status === "RUNNING";
+              return (
+                <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs ${isLive ? "animate-pulse bg-yellow-500/20 text-yellow-500" : "bg-primary/10 text-primary"}`}>
+                  {builderLogs.length}
+                </span>
+              );
+            })()}
             {tab === "deploy" && deployRuns.length > 0 && (
               <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
                 {deployRuns.length}
@@ -834,15 +840,48 @@ export default function ProjectPage() {
           <div className="overflow-y-auto h-full pr-1">
             <IssuesBoard
               issues={issues}
+              repoUrl={currentProject.repo_url}
               onSync={() => void handleSyncIssues()}
+              onAudit={() => void handleAudit()}
               onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
+              onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
               reviewingIssues={reviewingIssues}
+              assigningIssues={assigningIssues}
               isSyncing={isSyncingIssues}
+              isAuditing={isAuditing}
             />
           </div>
         )}
 
-        {activeTab === "logs" && (
+        {activeTab === "preview" && (
+          <div className="flex h-full flex-col items-center justify-center rounded-xl border border-border bg-card">
+            {currentProject.preview_url ? (
+              <iframe
+                src={currentProject.preview_url}
+                className="h-full w-full rounded-xl"
+                title="Project Preview"
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-4 text-center px-8">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full border border-border bg-muted">
+                  <ExternalLink className="h-7 w-7 text-muted-foreground" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Preview not available yet</p>
+                  <p className="mt-1 text-xs text-muted-foreground max-w-xs">
+                    The preview environment will be ready once Copilot finishes building and a preview deployment is triggered.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-xs text-muted-foreground">
+                  <span className="h-2 w-2 rounded-full bg-amber-500/70" />
+                  Current stage: {currentProject.project_stage.replace(/_/g, " ")}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "activity" && (
           <LogStream logs={builderLogs} maxHeight="100%" />
         )}
 

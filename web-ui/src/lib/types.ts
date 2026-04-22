@@ -68,6 +68,7 @@ export interface Project {
   llm_config: ProjectLlmConfig;
   repo_name: string | null;
   repo_url: string | null;
+  figma_urls: string[];
   repo_clone_url: string | null;
   default_branch: string | null;
   develop_branch: string | null;
@@ -128,7 +129,7 @@ export interface ChatMessage {
   timestamp: string;
 }
 
-export type BuilderStatus = "SUCCESS" | "BLOCKER" | "AMBIGUITY" | "SILENT_DECISION" | "ERROR";
+export type BuilderStatus = "SUCCESS" | "BLOCKER" | "AMBIGUITY" | "SILENT_DECISION" | "ERROR" | "INFO" | "RUNNING";
 
 export interface BuilderLog {
   project_id: string;
@@ -208,6 +209,7 @@ export interface ProjectCreateRequest {
   source?: string;
   source_ref?: string | null;
   llm_config?: ProjectLlmConfig;
+  figma_urls?: string[];
 }
 
 export interface UpdateProjectLlmConfigRequest extends ProjectLlmConfig {}

@@ -13,7 +13,7 @@ import type {
   ProviderModelCatalog,
 } from "@/lib/types";
 import { useProjectStore } from "@/stores/projectStore";
-import { X } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -41,6 +41,8 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
   const [loadingProviders, setLoadingProviders] = useState<
     Partial<Record<LlmProvider, boolean>>
   >({});
+  const [figmaUrls, setFigmaUrls] = useState<string[]>([]);
+  const [figmaFile, setFigmaFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { createProject } = useProjectStore();
 
@@ -88,10 +90,15 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
 
     setIsSubmitting(true);
     try {
-      await createProject(name.trim(), repoUrl.trim(), llmConfig);
+      const project = await createProject(name.trim(), repoUrl.trim(), llmConfig, figmaUrls.filter(Boolean));
+      if (figmaFile && project?.id) {
+        await api.uploadFigmaFile(project.id, figmaFile);
+      }
       setName("");
       setRepoUrl("");
       setNameDirty(false);
+      setFigmaUrls([]);
+      setFigmaFile(null);
       setLlmConfig(cloneProjectLlmConfig(defaultProjectLlmConfig));
       onClose();
     } catch {
@@ -156,6 +163,77 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
               placeholder="e.g., Invoice Dashboard"
               className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
+          </div>
+
+          {/* Figma Design URLs — optional */}
+          <div className="rounded-xl border border-border bg-background/60 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold">Figma Designs</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Optional — paste Figma URLs or upload a .fig file for design context.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFigmaUrls((prev) => [...prev, ""])}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted"
+              >
+                <Plus className="h-3 w-3" />
+                Add URL
+              </button>
+            </div>
+
+            {figmaUrls.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {figmaUrls.map((url, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={url}
+                      onChange={(e) =>
+                        setFigmaUrls((prev) => prev.map((u, j) => (j === i ? e.target.value : u)))
+                      }
+                      placeholder="https://www.figma.com/design/..."
+                      className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFigmaUrls((prev) => prev.filter((_, j) => j !== i))}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-3">
+              {figmaFile ? (
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs">
+                  <span className="flex-1 truncate text-foreground">{figmaFile.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setFigmaFile(null)}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted">
+                  <Plus className="h-3 w-3" />
+                  Upload .fig file
+                  <input
+                    type="file"
+                    accept=".fig"
+                    className="hidden"
+                    onChange={(e) => setFigmaFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              )}
+            </div>
           </div>
 
           <div className="rounded-xl border border-border bg-background/60 p-4">

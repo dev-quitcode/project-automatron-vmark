@@ -155,6 +155,51 @@ class RepositoryManager:
     async def get_remote_repository(self, repo_name: str) -> dict[str, Any] | None:
         return await self._get_repository(repo_name)
 
+    async def register_webhook(self, owner: str, repo_name: str) -> str:
+        """Idempotently register the Automatron webhook on a GitHub repo.
+
+        Returns one of: "registered", "already_exists", "skipped", "error: <msg>"
+        """
+        public_url = settings.automatron_public_url.rstrip("/")
+        if not public_url:
+            return "skipped"
+
+        webhook_url = f"{public_url}/api/webhooks/github"
+
+        async with httpx.AsyncClient(
+            base_url=settings.github_api_url,
+            headers=self._github_headers(),
+            timeout=15,
+        ) as client:
+            # Check for an existing hook with the same URL (idempotent)
+            resp = await client.get(f"/repos/{owner}/{repo_name}/hooks")
+            if resp.status_code == 200:
+                existing = resp.json()
+                for hook in existing:
+                    if hook.get("config", {}).get("url") == webhook_url:
+                        return "already_exists"
+            elif resp.status_code not in {200, 404}:
+                return f"error: list hooks returned {resp.status_code}"
+
+            # Create the webhook
+            payload: dict[str, Any] = {
+                "name": "web",
+                "active": True,
+                "events": ["pull_request"],
+                "config": {
+                    "url": webhook_url,
+                    "content_type": "json",
+                    "insecure_ssl": "0",
+                },
+            }
+            if settings.github_webhook_secret:
+                payload["config"]["secret"] = settings.github_webhook_secret
+
+            create_resp = await client.post(f"/repos/{owner}/{repo_name}/hooks", json=payload)
+            if create_resp.status_code == 201:
+                return "registered"
+            return f"error: {create_resp.status_code} {create_resp.text[:200]}"
+
     async def delete_remote_repository(self, repo_name: str) -> bool:
         existing = await self._get_repository(repo_name)
         if existing is None:

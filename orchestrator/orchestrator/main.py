@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from orchestrator.api.routes import router as api_router
+from orchestrator.api.webhook_github import router as webhook_router
 from orchestrator.api.socket_server import sio
 from orchestrator.config import settings
 from orchestrator.models.project import init_db
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
 
     # REST API routes
     app.include_router(api_router, prefix="/api")
+    app.include_router(webhook_router, prefix="/api")
 
     # Health endpoint
     @app.get("/health")

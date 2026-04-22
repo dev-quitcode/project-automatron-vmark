@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from orchestrator.api.websocket import (
     emit_architect_chunk,
     emit_architect_message,
+    emit_builder_log,
     emit_error,
     emit_human_required,
     emit_issues_updated,
@@ -29,9 +30,11 @@ from orchestrator.models.project import (
     get_project,
     list_github_issues,
     record_approval,
+    save_activity_log,
     update_github_issue_pr,
     update_github_issue_status,
     update_project,
+    update_project_preview,
 )
 from orchestrator.observability import trace_event
 
@@ -67,6 +70,113 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str] | None:
     if len(parts) == 2 and parts[0] and parts[1]:
         return parts[0], parts[1].rstrip(".git")
     return None
+
+
+def _read_source_files(repo_dir: "Path", max_chars: int = 40000) -> str:
+    """Walk repo_dir and return key source files as a formatted string."""
+    import os as _os
+
+    SKIP_DIRS = {
+        "node_modules", ".git", ".next", "dist", "build", ".venv",
+        "__pycache__", ".cache", "coverage", ".turbo", "out", ".mypy_cache",
+    }
+    INCLUDE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".py", ".css", ".md"}
+    SKIP_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+
+    parts: list[str] = []
+    total = 0
+
+    for dirpath, dirnames, filenames in _os.walk(repo_dir):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for filename in sorted(filenames):
+            if filename in SKIP_FILES:
+                continue
+            path = Path(dirpath) / filename
+            if path.suffix not in INCLUDE_EXTS:
+                continue
+            rel = path.relative_to(repo_dir)
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+                if len(content) > 5000:
+                    content = content[:5000] + "\n... [truncated]"
+                entry = f"### {rel}\n```\n{content}\n```\n\n"
+                parts.append(entry)
+                total += len(entry)
+                if total >= max_chars:
+                    return "\n".join(parts)
+            except Exception:
+                pass
+
+    return "\n".join(parts)
+
+
+async def _fetch_figma_context(urls: list[str], token: str) -> str:
+    """Fetch frame/component names and text from Figma files and return as text summary."""
+    import httpx
+
+    parts: list[str] = []
+    async with httpx.AsyncClient(timeout=15) as client:
+        for url in urls:
+            file_key_m = re.search(r"figma\.com/(?:design|file)/([^/?#]+)", url)
+            if not file_key_m:
+                parts.append(f"[Skipped — not a valid Figma URL: {url}]")
+                continue
+            file_key = file_key_m.group(1)
+            node_id_m = re.search(r"node-id=([^&]+)", url)
+
+            try:
+                if node_id_m:
+                    node_id = node_id_m.group(1).replace("-", ":")
+                    resp = await client.get(
+                        f"https://api.figma.com/v1/files/{file_key}/nodes",
+                        params={"ids": node_id},
+                        headers={"X-Figma-Token": token},
+                    )
+                else:
+                    resp = await client.get(
+                        f"https://api.figma.com/v1/files/{file_key}",
+                        headers={"X-Figma-Token": token},
+                    )
+            except Exception as exc:
+                parts.append(f"[Figma fetch error for {url}: {exc}]")
+                continue
+
+            if resp.status_code != 200:
+                parts.append(f"[Figma {url}: HTTP {resp.status_code}]")
+                continue
+
+            summary = _summarise_figma_node(resp.json())
+            parts.append(f"**{url}**\n{summary}")
+
+    return "\n\n".join(parts)
+
+
+def _summarise_figma_node(data: dict[str, Any]) -> str:
+    """Walk Figma JSON and extract frame/component names and visible text (max 100 lines)."""
+    lines: list[str] = []
+
+    def walk(node: dict[str, Any], depth: int = 0) -> None:
+        if len(lines) >= 100 or depth > 5:
+            return
+        node_type = node.get("type", "")
+        name = node.get("name", "")
+        chars = node.get("characters", "")
+        indent = "  " * depth
+        if node_type in ("FRAME", "COMPONENT", "COMPONENT_SET", "SECTION", "GROUP", "PAGE"):
+            lines.append(f"{indent}- [{node_type}] {name}")
+        elif chars:
+            lines.append(f'{indent}  "{chars[:80]}"')
+        for child in node.get("children", []):
+            walk(child, depth + 1)
+
+    doc = data.get("document") or {}
+    nodes = data.get("nodes") or {}
+    if doc:
+        walk(doc)
+    for node_data in nodes.values():
+        walk(node_data.get("document", node_data))
+
+    return "\n".join(lines)
 
 
 def _render_issue_body(task: dict[str, Any], epic: str, story: str) -> str:
@@ -120,6 +230,7 @@ class GitHubOrchestrator:
             "actor": "orchestrator",
             "stage": "orchestration",
         }
+        self._log_seq = 0
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -137,6 +248,23 @@ class GitHubOrchestrator:
         self._trace_ctx["stage"] = stage
         self._trace_ctx["actor"] = actor
 
+    async def _log(self, task_text: str, output: str = "", status: str = "INFO") -> None:
+        self._log_seq += 1
+        await emit_builder_log(
+            self.project_id,
+            task_index=self._log_seq,
+            task_text=task_text,
+            output=output,
+            status=status,
+        )
+        await save_activity_log(
+            self.project_id,
+            seq=self._log_seq,
+            task_text=task_text,
+            output=output,
+            status=status,
+        )
+
     # ── Stage 1: Analyze repo and produce plan ────────────────────────────────
 
     async def analyze_and_plan(self) -> None:
@@ -152,11 +280,25 @@ class GitHubOrchestrator:
             if not parsed:
                 raise RuntimeError("Cannot parse GitHub owner/repo from project")
             owner, repo = parsed
+            # If no owner in URL (just a bare repo name), default to the configured org
+            if owner == repo or not owner:
+                org = settings.github_default_org or settings.github_owner
+                owner = org
             await update_project(
                 self.project_id,
                 github_repo_owner=owner,
                 github_repo_name=repo,
             )
+
+        # Auto-register webhook so PR events are delivered without manual setup
+        webhook_result = await self.gh.register_webhook(owner, repo)
+        if webhook_result == "registered":
+            await self._log("Webhook registered", f"PR events → {settings.automatron_public_url}/api/webhooks/github", "SUCCESS")
+        elif webhook_result == "already_exists":
+            await self._log("Webhook already registered", f"{owner}/{repo}", "INFO")
+        elif webhook_result.startswith("error:"):
+            await self._log("Webhook registration failed", webhook_result, "AMBIGUITY")
+        # "skipped" means AUTOMATRON_PUBLIC_URL not set — silent, user hasn't configured it
 
         self._set_trace("planning", "architect")
         await trace_event(
@@ -164,30 +306,62 @@ class GitHubOrchestrator:
             {"owner": owner, "repo": repo},
         )
 
+        await self._log("Reading repository files", f"{owner}/{repo}")
+
         # Read repo context
         readme = await self.gh.read_file(owner, repo, "README.md") or ""
         prd = await self.gh.read_file(owner, repo, "docs/PRD.md") or ""
         extra_context = f"\n\n---\n\n{prd}" if prd else ""
 
+        context_parts = []
+        if readme:
+            context_parts.append("README.md")
+        if prd:
+            context_parts.append("docs/PRD.md")
+        await self._log(
+            "Repository context loaded",
+            ", ".join(context_parts) if context_parts else "No README found",
+            "SUCCESS" if context_parts else "AMBIGUITY",
+        )
+
+        # Fetch optional Figma design context (from URLs)
+        figma_context = ""
+        figma_urls = project.get("figma_urls") or []
+        if figma_urls and settings.figma_access_token:
+            await self._log("Fetching Figma design context", f"{len(figma_urls)} URL(s)", "RUNNING")
+            figma_context = await _fetch_figma_context(figma_urls, settings.figma_access_token)
+            await self._log("Figma context loaded", f"{len(figma_context)} chars", "INFO")
+        elif figma_urls and not settings.figma_access_token:
+            await self._log("Figma URLs present but FIGMA_ACCESS_TOKEN not set", "", "AMBIGUITY")
+
+        # Append Figma file context if a .fig was uploaded
+        figma_file_context = (project.get("figma_file_context") or "").strip()
+        if figma_file_context:
+            figma_context = (figma_context + "\n\n" + figma_file_context).strip()
+            await self._log("Figma file context included", f"{len(figma_file_context)} chars", "INFO")
+
         system_prompt = _load_prompt("architect_github_v1.txt")
         user_msg = (
             f"Repository: {owner}/{repo}\n\n"
             f"## README\n\n{readme}{extra_context}\n\n"
-            "Produce the architecture document, stories document, and issue plan now."
         )
+        if figma_context:
+            user_msg += f"## Figma Design Context\n\n{figma_context}\n\n"
+        user_msg += "Produce the architecture document, stories document, and issue plan now."
 
         llm_cfg = await self._llm_config()
         model = llm_cfg["architect"]["model"]
 
+        await self._log("Architect LLM generating plan", f"Model: {model}", "RUNNING")
+
         # Stream tokens to UI
         full_response = ""
-        stream = await call_llm_streaming(
+        async for chunk in call_llm_streaming(
             [SystemMessage(content=system_prompt), HumanMessage(content=user_msg)],
             model=model,
-            max_tokens=16384,
+            max_tokens=32768,
             trace_context={**self._trace_ctx, "actor": "architect", "prompt_name": "architect_github_v1"},
-        )
-        async for chunk in stream:
+        ):
             full_response += chunk
             await emit_architect_chunk(self.project_id, chunk)
 
@@ -199,10 +373,22 @@ class GitHubOrchestrator:
         try:
             issue_plan = json.loads(issue_plan_raw)
         except json.JSONDecodeError:
+            logger.warning(
+                "architect: json:issue_plan block not parseable — response length=%d, block_raw=%r",
+                len(full_response), issue_plan_raw[:200],
+            )
             issue_plan = {}
 
         # Build a human-readable plan_md from the issue plan
         plan_md = _build_plan_md(issue_plan, architecture_md, stories_md)
+
+        epics = len(issue_plan.get("epics", []))
+        tasks = _count_tasks(issue_plan)
+        await self._log(
+            "Plan generated — awaiting your approval",
+            f"{epics} epics · {tasks} tasks",
+            "SUCCESS",
+        )
 
         await update_project(
             self.project_id,
@@ -247,6 +433,7 @@ class GitHubOrchestrator:
         await trace_event(self.project_id, "orchestrator", "apply_plan.started", {})
 
         await update_project(self.project_id, project_stage="building", status="building")
+        await self._log("Plan approved — starting issue creation", f"{owner}/{repo}")
 
         # Push architecture + stories docs
         architecture_md = _parse_tagged_block(project.get("plan_md", ""), "markdown:architecture") or ""
@@ -261,6 +448,7 @@ class GitHubOrchestrator:
 
         default_branch = project.get("default_branch") or "main"
 
+        docs_pushed = []
         for path, content, label in [
             ("docs/ARCHITECTURE.md", architecture_md, "architecture"),
             ("docs/STORIES.md", stories_md, "stories"),
@@ -272,12 +460,17 @@ class GitHubOrchestrator:
                         f"docs: add {label} by Automatron",
                         branch=default_branch,
                     )
+                    docs_pushed.append(path)
                 except Exception as exc:
                     logger.warning("Could not push %s: %s", path, exc)
+
+        if docs_pushed:
+            await self._log("Docs pushed to repository", ", ".join(docs_pushed), "SUCCESS")
 
         # Create milestones and issues
         total = _count_tasks(issue_plan)
         created = 0
+        await self._log("Creating GitHub milestones and issues", f"{total} tasks planned")
 
         for epic in issue_plan.get("epics", []):
             epic_title = epic.get("title", "Untitled Epic")
@@ -286,32 +479,55 @@ class GitHubOrchestrator:
                 milestone_number = await self.gh.create_milestone(
                     owner, repo, epic_title, epic.get("description", "")
                 )
+                await self._log(f"Milestone: {epic_title}", f"#{milestone_number}", "INFO")
             except Exception as exc:
                 logger.warning("Could not create milestone '%s': %s", epic_title, exc)
+                await self._log(f"Milestone skipped: {epic_title}", str(exc), "AMBIGUITY")
 
-            # Ensure story label exists
+            # Ensure story label exists (GitHub caps label names at 50 chars)
             for story in epic.get("stories", []):
                 story_title = story.get("title", "")
                 if story_title:
+                    label_name = story_title[:50]
                     try:
-                        await self.gh.ensure_label(owner, repo, story_title, "bfd4f2")
-                    except Exception:
-                        pass
+                        await self.gh.ensure_label(owner, repo, label_name, "bfd4f2")
+                    except Exception as exc:
+                        logger.warning("Could not ensure label '%s': %s", label_name, exc)
 
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
                     body = _render_issue_body(task, epic_title, story_title)
-                    labels = [story_title] if story_title else []
+                    # GitHub label names are capped at 50 chars
+                    label_name = story_title[:50] if story_title else ""
+                    labels = [label_name] if label_name else []
 
                     try:
-                        gh_issue = await self.gh.create_issue(
-                            owner, repo,
-                            title=task_title,
-                            body=body,
-                            milestone_number=milestone_number,
-                            labels=labels,
-                            assignees=["copilot"],
-                        )
+                        try:
+                            gh_issue = await self.gh.create_issue(
+                                owner, repo,
+                                title=task_title,
+                                body=body,
+                                milestone_number=milestone_number,
+                                labels=labels,
+                                assignees=["copilot"],
+                            )
+                        except Exception:
+                            try:
+                                # Copilot agent not enabled on this repo — create without assignee
+                                gh_issue = await self.gh.create_issue(
+                                    owner, repo,
+                                    title=task_title,
+                                    body=body,
+                                    milestone_number=milestone_number,
+                                    labels=labels,
+                                )
+                            except Exception:
+                                # Milestone or label invalid — bare create
+                                gh_issue = await self.gh.create_issue(
+                                    owner, repo,
+                                    title=task_title,
+                                    body=body,
+                                )
                         issue_number = gh_issue["number"]
                         cw_url = gh_issue["html_url"]
                         await create_github_issue(
@@ -324,8 +540,20 @@ class GitHubOrchestrator:
                             copilot_workspace_url=cw_url,
                         )
                         created += 1
+                        await self._log(
+                            f"Issue #{issue_number}: {task_title}",
+                            epic_title,
+                            "SUCCESS",
+                        )
                     except Exception as exc:
                         logger.error("Failed to create issue '%s': %s", task_title, exc)
+                        await self._log(f"Failed: {task_title}", str(exc), "BLOCKER")
+
+        await self._log(
+            f"{created}/{total} issues created on GitHub",
+            "Assign to Copilot to start building" if created else "Check errors above",
+            "SUCCESS" if created == total else "AMBIGUITY",
+        )
 
         issues = await list_github_issues(self.project_id)
         await emit_issues_updated(self.project_id, issues)
@@ -395,6 +623,28 @@ class GitHubOrchestrator:
             progress={"completed": done, "total": len(issues)},
         )
 
+        # If all issues are done and we don't have a preview URL yet, auto-detect from GitHub Deployments
+        project = await self._project()
+        if done == len(issues) and done > 0 and not project.get("preview_url"):
+            await self._detect_and_set_preview_url(owner, repo)
+
+    async def _detect_and_set_preview_url(self, owner: str, repo: str) -> None:
+        """Clone the repo locally and run it in Docker for a live preview."""
+        from orchestrator.preview import run_preview_locally
+        await self._log("Starting local preview", f"Cloning and building {owner}/{repo}", "RUNNING")
+        preview_url = await run_preview_locally(str(self.project_id), owner, repo)
+        if preview_url:
+            await update_project_preview(self.project_id, preview_url, "ready")
+            await self._log("Preview ready", preview_url, "SUCCESS")
+            await emit_status_update(
+                self.project_id,
+                status="building",
+                stage="building",
+                preview_url=preview_url,
+            )
+        else:
+            await self._log("Preview failed", "Could not build or run the project locally", "ERROR")
+
     # ── Stage 4: AI review a PR ───────────────────────────────────────────────
 
     async def review_pr(self, issue_number: int, pr_number: int) -> None:
@@ -404,6 +654,7 @@ class GitHubOrchestrator:
         repo = project["github_repo_name"]
 
         self._set_trace("pr_review", "reviewer")
+        await self._log(f"Reviewing PR #{pr_number}", f"Issue #{issue_number} · {owner}/{repo}")
 
         # Get diff and task spec (issue body)
         diff = await self.gh.get_pr_diff(owner, repo, pr_number)
@@ -412,6 +663,11 @@ class GitHubOrchestrator:
 
         llm_cfg = await self._llm_config()
         model = llm_cfg["reviewer"]["model"]
+        await self._log(
+            f"Running reviewer LLM on PR #{pr_number}",
+            f"Model: {model} · diff {len(diff)} chars",
+            "RUNNING",
+        )
 
         system_prompt = (
             "You are a code reviewer. You will receive a GitHub issue (the task specification) "
@@ -442,6 +698,11 @@ class GitHubOrchestrator:
             return
 
         passed = review_text.strip().upper().startswith("PASSED")
+        await self._log(
+            f"PR #{pr_number} review: {'PASSED' if passed else 'ISSUES FOUND'}",
+            review_text[:200].replace("\n", " "),
+            "SUCCESS" if passed else "BLOCKER",
+        )
         review_data = {
             "passed": passed,
             "summary": review_text,
@@ -472,6 +733,173 @@ class GitHubOrchestrator:
         await trace_event(
             self.project_id, "reviewer", "pr.review.completed",
             {"issue_number": issue_number, "pr_number": pr_number, "passed": passed},
+        )
+
+    # ── Stage 5: Audit codebase and create fix issues ────────────────────────
+
+    async def audit_codebase(self) -> None:
+        """Reviewer scans the current code, architect generates new fix issues."""
+        import os
+
+        project = await self._project()
+        owner = project["github_repo_owner"]
+        repo = project["github_repo_name"]
+
+        self._set_trace("audit", "reviewer")
+        await self._log("Starting code audit", f"{owner}/{repo}", "RUNNING")
+
+        # Read source files from local workspace clone if available
+        workspace_dir = settings.workspace_base_dir / str(self.project_id) / "repo"
+        if workspace_dir.exists():
+            code_context = _read_source_files(workspace_dir)
+            await self._log("Source files loaded", f"{len(code_context)} chars from workspace", "INFO")
+        else:
+            readme = await self.gh.read_file(owner, repo, "README.md") or ""
+            code_context = f"### README.md\n{readme}"
+            await self._log("Source files loaded", "from GitHub README (no local clone)", "INFO")
+
+        # Build context from existing issues and reviews
+        existing_issues = await list_github_issues(self.project_id)
+        plan_summary = "\n".join(
+            f"- #{i['issue_number']}: {i['title']} [{i['status']}]"
+            for i in existing_issues
+        )
+        review_notes = []
+        for i in existing_issues:
+            review = i.get("pr_review_json") or {}
+            if isinstance(review, dict) and not review.get("passed") and review.get("summary"):
+                review_notes.append(
+                    f"Issue #{i['issue_number']} ({i['title']}): {review['summary'][:400]}"
+                )
+
+        llm_cfg = await self._llm_config()
+        reviewer_model = llm_cfg["reviewer"]["model"]
+        architect_model = llm_cfg["architect"]["model"]
+
+        # ── Reviewer: identify what's missing / broken ───────────────────────
+        await self._log("Reviewer scanning codebase", f"Model: {reviewer_model}", "RUNNING")
+
+        reviewer_system = (
+            "You are an expert code reviewer. You will receive the original task plan and "
+            "the current state of the codebase.\n\n"
+            "Identify:\n"
+            "1. Features from the plan that were not implemented\n"
+            "2. Code that is incomplete, broken, or is just the default scaffold\n"
+            "3. Critical bugs or architectural problems\n\n"
+            "Be specific: reference file paths and exactly what is missing or wrong.\n"
+            "Output a numbered list of findings. Be concise.\n\n"
+            "IMPORTANT — Fix strategy:\n"
+            "If the project already has substantial working code, prioritise fixes that require "
+            "the MINIMUM change to the existing codebase. Do not propose rewriting or replacing "
+            "code that already works. Prefer patching, adding missing pieces, or swapping a single "
+            "dependency over full rewrites. Only recommend a rewrite if the existing code is "
+            "fundamentally incompatible and cannot be patched."
+        )
+        reviewer_user = (
+            f"## Original Task Plan\n\n{plan_summary}\n\n"
+            + (f"## Failed PR Reviews\n\n" + "\n\n".join(review_notes) + "\n\n" if review_notes else "")
+            + f"## Current Codebase\n\n{code_context[:30000]}"
+        )
+
+        try:
+            findings = await call_llm(
+                [SystemMessage(content=reviewer_system), HumanMessage(content=reviewer_user)],
+                model=reviewer_model,
+                max_tokens=4096,
+                trace_context={**self._trace_ctx, "actor": "reviewer"},
+            )
+        except Exception as exc:
+            await emit_error(self.project_id, f"Audit review failed: {exc}")
+            return
+
+        await self._log("Reviewer findings", findings[:300].replace("\n", " "), "BLOCKER")
+
+        # ── Architect: generate fix issues ────────────────────────────────────
+        self._set_trace("audit", "architect")
+        await self._log("Architect generating fix issues", f"Model: {architect_model}", "RUNNING")
+
+        arch_system = _load_prompt("architect_github_v1.txt")
+        arch_user = (
+            f"## Project: {project.get('name', repo)}\n\n"
+            f"The codebase has been reviewed. The following problems were found:\n\n"
+            f"{findings}\n\n"
+            "Generate a json:issue_plan with specific tasks to fix each problem. "
+            "Focus only on the issues found above. Each task must fix one specific problem.\n\n"
+            "IMPORTANT — Minimum-change principle: if the project already has substantial working "
+            "code, each task must patch or extend the existing code rather than replace it. "
+            "Do not generate tasks that rewrite working features from scratch. "
+            "A task should change only what is necessary to fix the reported problem."
+        )
+
+        full_response = ""
+        async for chunk in call_llm_streaming(
+            [SystemMessage(content=arch_system), HumanMessage(content=arch_user)],
+            model=architect_model,
+            max_tokens=16384,
+            trace_context={**self._trace_ctx, "actor": "architect"},
+        ):
+            full_response += chunk
+            await emit_architect_chunk(self.project_id, chunk)
+
+        await emit_architect_message(self.project_id, full_response)
+
+        issue_plan_raw = _parse_tagged_block(full_response, "json:issue_plan")
+        if not issue_plan_raw:
+            await emit_error(self.project_id, "Architect did not return a valid issue plan")
+            return
+
+        try:
+            issue_plan = json.loads(issue_plan_raw)
+        except json.JSONDecodeError as exc:
+            await emit_error(self.project_id, f"Issue plan JSON parse error: {exc}")
+            return
+
+        # ── Create issues on GitHub ───────────────────────────────────────────
+        total = _count_tasks(issue_plan)
+        await self._log("Creating fix issues on GitHub", f"{total} tasks planned", "RUNNING")
+
+        created = 0
+        for epic in issue_plan.get("epics", []):
+            epic_title = epic.get("title", "Untitled Epic")
+            milestone_number: int | None = None
+            try:
+                milestone_number = await self.gh.create_milestone(owner, repo, epic_title)
+            except Exception:
+                pass
+
+            for story in epic.get("stories", []):
+                story_title = story.get("title", "")
+                for task in story.get("tasks", []):
+                    task_title = task.get("title", "Untitled Task")
+                    body = _render_issue_body(task, epic_title, story_title)
+                    try:
+                        gh_issue = await self.gh.create_issue(
+                            owner, repo,
+                            title=task_title,
+                            body=body,
+                            milestone_number=milestone_number,
+                        )
+                        issue_num = gh_issue["number"]
+                        await create_github_issue(
+                            str(uuid.uuid4()),
+                            str(self.project_id),
+                            issue_num,
+                            task_title,
+                            epic=epic_title,
+                            story=story_title or None,
+                            copilot_workspace_url=gh_issue["html_url"],
+                        )
+                        created += 1
+                        await self._log(f"Issue #{issue_num}: {task_title}", "", "SUCCESS")
+                    except Exception as exc:
+                        logger.warning("Failed to create issue '%s': %s", task_title, exc)
+
+        issues = await list_github_issues(self.project_id)
+        await emit_issues_updated(self.project_id, issues)
+        await self._log(
+            f"Audit complete — {created}/{total} fix issues created",
+            "Use 'Assign Copilot' to start fixing",
+            "SUCCESS",
         )
 
 
@@ -506,6 +934,70 @@ async def resume_project(project_id: str, approval_type: str, approved: bool = T
 async def sync_issues(project_id: str) -> None:
     orch = GitHubOrchestrator(project_id)
     await orch.sync_issues()
+
+
+async def audit_project(project_id: str) -> None:
+    orch = GitHubOrchestrator(project_id)
+    await orch.audit_codebase()
+
+
+async def assign_to_copilot(project_id: str) -> dict:
+    """Assign all open issues in the project to the copilot agent."""
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner")
+    repo = project.get("github_repo_name")
+    if not owner or not repo:
+        raise RuntimeError("Project has no GitHub repo configured")
+
+    issues = await list_github_issues(project_id)
+    open_issues = [i for i in issues if i["status"] == "open"]
+
+    await orch._log(
+        f"Triggering Copilot agent on {len(open_issues)} open issues",
+        f"{owner}/{repo}",
+    )
+
+    assigned, failed = 0, 0
+    for issue in open_issues:
+        try:
+            await orch.gh.trigger_copilot_agent(owner, repo, issue["issue_number"])
+            assigned += 1
+            await orch._log(
+                f"Copilot triggered on #{issue['issue_number']}",
+                issue["title"],
+                "SUCCESS",
+            )
+        except Exception as exc:
+            logger.warning("Could not trigger copilot on issue #%s: %s", issue["issue_number"], exc)
+            failed += 1
+            await orch._log(
+                f"Failed to trigger #{issue['issue_number']}",
+                str(exc),
+                "BLOCKER",
+            )
+
+    await orch._log(
+        f"Copilot assignment complete: {assigned} triggered, {failed} failed",
+        "",
+        "SUCCESS" if failed == 0 else "AMBIGUITY",
+    )
+    logger.info("assign_to_copilot: %d assigned, %d failed (project=%s)", assigned, failed, project_id)
+    return {"assigned": assigned, "failed": failed}
+
+
+async def assign_to_copilot_issue(project_id: str, issue_number: int) -> dict:
+    """Assign a single issue to the Copilot coding agent."""
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner")
+    repo = project.get("github_repo_name")
+    if not owner or not repo:
+        raise RuntimeError("Project has no GitHub repo configured")
+
+    await orch.gh.trigger_copilot_agent(owner, repo, issue_number)
+    await orch._log(f"Copilot assigned to #{issue_number}", f"{owner}/{repo}", "SUCCESS")
+    return {"assigned": 1, "issue_number": issue_number}
 
 
 async def review_pr(project_id: str, issue_number: int, pr_number: int) -> None:

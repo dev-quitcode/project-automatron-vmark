@@ -6,20 +6,28 @@ import asyncio
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+import io
+import json
+import zipfile
+
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from orchestrator.llm.catalog import get_all_provider_model_catalogs, get_provider_model_catalog
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config
+from orchestrator.config import settings
 from orchestrator.models.project import (
     create_project,
     get_all_projects,
     get_chat_messages,
     get_deploy_runs,
     get_project,
+    get_activity_logs,
     get_task_logs,
     get_trace_events,
     list_github_issues,
+    update_project,
+    update_project_deploy_target,
     update_project_llm_config,
     update_project_plan,
     update_project_stage,
@@ -27,12 +35,15 @@ from orchestrator.models.project import (
 )
 from orchestrator.models.session import get_sessions
 from orchestrator.orchestrator import (
+    assign_to_copilot as orch_assign_copilot,
+    assign_to_copilot_issue as orch_assign_copilot_issue,
+    audit_project as orch_audit_project,
     resume_project as orch_resume,
     review_pr as orch_review_pr,
     start_project as orch_start,
     sync_issues as orch_sync_issues,
 )
-from orchestrator.validation.preflight import PreflightService
+from orchestrator.validation.preflight import PreflightResult, PreflightService
 from orchestrator.repository.manager import RepositoryManager
 
 router = APIRouter()
@@ -59,6 +70,7 @@ class CreateProjectRequest(BaseModel):
     source: str = "manual"
     source_ref: str | None = None
     llm_config: ProjectLlmConfigRequest | None = None
+    figma_urls: list[str] = Field(default_factory=list)
 
 
 class ReviewPRRequest(BaseModel):
@@ -106,6 +118,7 @@ class ProjectResponse(BaseModel):
     decision_log: list[dict[str, Any]] = Field(default_factory=list)
     plan_delta_history: list[dict[str, Any]] = Field(default_factory=list)
     repo_name: str | None
+    figma_urls: list[str] = Field(default_factory=list)
     repo_url: str | None
     repo_clone_url: str | None
     default_branch: str | None
@@ -197,13 +210,29 @@ async def api_create_project(req: CreateProjectRequest) -> Any:
     if not repo_url:
         raise HTTPException(status_code=422, detail="repo_url is required")
 
+    # Resolve owner/repo eagerly so the project is correctly scoped to the org
+    from orchestrator.orchestrator import _parse_repo_url
+    github_repo_owner: str | None = None
+    github_repo_name: str | None = None
+    parsed = _parse_repo_url(repo_url)
+    if parsed:
+        github_repo_owner, github_repo_name = parsed
+    elif "/" not in repo_url:
+        # bare repo name — scope to default org
+        default_owner = settings.github_default_org or settings.github_owner
+        github_repo_owner = default_owner
+        github_repo_name = repo_url
+
     project = await create_project(
         str(uuid.uuid4()),
         req.name,
-        repo_url,  # stored as intake_text / repo_url
+        repo_url,
         intake_source=req.source,
         source_ref=req.source_ref,
         llm_config=normalize_llm_config(req.llm_config.model_dump() if req.llm_config else None),
+        github_repo_owner=github_repo_owner,
+        github_repo_name=github_repo_name,
+        figma_urls=[u for u in req.figma_urls if u.strip()],
     )
     return project
 
@@ -239,6 +268,55 @@ async def api_sync_issues(project_id: str, background_tasks: BackgroundTasks) ->
     await _get_required_project(project_id)
     background_tasks.add_task(orch_sync_issues, project_id)
     return {"status": "syncing", "project_id": project_id}
+
+
+@router.post("/projects/{project_id}/audit")
+async def api_audit_project(project_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
+    await _get_required_project(project_id)
+    background_tasks.add_task(orch_audit_project, project_id)
+    return {"status": "auditing", "project_id": project_id}
+
+
+@router.post("/projects/{project_id}/figma-file")
+async def api_upload_figma_file(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    """Accept a .fig file, extract its document.json, summarise it, store as design context."""
+    await _get_required_project(project_id)
+
+    if not (file.filename or "").lower().endswith(".fig"):
+        raise HTTPException(status_code=400, detail="Only .fig files are accepted")
+
+    data = await file.read()
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+            # .fig files contain document.json at the root
+            doc_name = next((n for n in names if n.endswith("document.json")), None)
+            if not doc_name:
+                raise HTTPException(status_code=422, detail=f".fig file has no document.json (found: {names[:5]})")
+            with zf.open(doc_name) as f:
+                doc = json.load(f)
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=422, detail="File is not a valid .fig archive")
+
+    from orchestrator.orchestrator import _summarise_figma_node
+    summary = _summarise_figma_node(doc)
+
+    await update_project(project_id, figma_file_context=summary)
+
+    return {"status": "ok", "chars": len(summary), "filename": file.filename}
+
+
+@router.post("/projects/{project_id}/assign-copilot")
+async def api_assign_copilot(project_id: str) -> dict:
+    await _get_required_project(project_id)
+    return await orch_assign_copilot(project_id)
+
+
+@router.post("/projects/{project_id}/issues/{issue_number}/assign-copilot")
+async def api_assign_copilot_issue(project_id: str, issue_number: int) -> dict:
+    await _get_required_project(project_id)
+    return await orch_assign_copilot_issue(project_id, issue_number)
 
 
 @router.post("/projects/{project_id}/review-pr")
@@ -343,6 +421,10 @@ async def api_preflight_project(project_id: str, req: PreflightRequest) -> Any:
 @router.get("/projects/{project_id}/logs")
 async def api_get_logs(project_id: str) -> list[dict[str, Any]]:
     await _get_required_project(project_id)
+    activity = await get_activity_logs(project_id)
+    if activity:
+        return activity
+    # fall back to legacy task_logs for old projects
     return await get_task_logs(project_id)
 
 
@@ -376,6 +458,6 @@ async def api_get_project_trace(project_id: str) -> list[dict[str, Any]]:
     return await get_trace_events(project_id)
 
 
-def _raise_for_preflight_failure(result: dict[str, Any]) -> None:
-    if result.get("status") == "preflight_failed":
-        raise HTTPException(status_code=409, detail=result.get("preflight", {}))
+def _raise_for_preflight_failure(result: PreflightResult) -> None:
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.to_dict())
