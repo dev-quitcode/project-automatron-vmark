@@ -1,0 +1,11 @@
+# Development overlay — exposes ports for local access
+# Use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  orchestrator:
+    ports:
+      - "8000:8000"
+
+  web-ui:
+    ports:
+      - "3000:3000"
