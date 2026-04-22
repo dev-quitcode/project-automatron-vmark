@@ -145,7 +145,7 @@ export function useWebSocket(projectId?: string) {
           updateIssue({
             ...issue,
             status: "pr_reviewed",
-            pr_review: { passed: data.passed, summary: data.summary, pr_number: data.pr_number },
+            pr_review: { passed: data.passed, summary: data.summary, pr_number: data.pr_number, issue_number: data.issue_number },
           });
         }
       }
