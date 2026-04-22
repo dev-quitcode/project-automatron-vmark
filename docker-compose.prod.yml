@@ -1,0 +1,43 @@
+# Production overlay for Traefik deployment
+# Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+services:
+  orchestrator:
+    env_file:
+      - ./.env
+    networks:
+      - proxy
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.automatron-api.rule=Host(`automatron.quitcode.com`) && (PathPrefix(`/api`) || Path(`/health`) || PathPrefix(`/socket.io`))"
+      - "traefik.http.routers.automatron-api.entrypoints=websecure"
+      - "traefik.http.routers.automatron-api.tls.certresolver=le"
+      - "traefik.http.services.automatron-api.loadbalancer.server.port=8000"
+
+  web-ui:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: ${API_URL:-https://automatron.quitcode.com}
+        NEXT_PUBLIC_WS_URL: ${WS_URL:-wss://automatron.quitcode.com}
+    networks:
+      - proxy
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.automatron-http.rule=Host(`automatron.quitcode.com`)"
+      - "traefik.http.routers.automatron-http.entrypoints=web"
+      - "traefik.http.routers.automatron-http.middlewares=automatron-redirect"
+      - "traefik.http.routers.automatron.rule=Host(`automatron.quitcode.com`)"
+      - "traefik.http.routers.automatron.entrypoints=websecure"
+      - "traefik.http.routers.automatron.tls.certresolver=le"
+      - "traefik.http.services.automatron.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.automatron-redirect.redirectscheme.scheme=https"
+
+  nginx:
+    profiles:
+      - disabled
+
+networks:
+  proxy:
+    external: true

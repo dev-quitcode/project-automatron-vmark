@@ -1,0 +1,99 @@
+name: Deploy Automatron
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: automatron-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_HOST: 91.98.68.42
+      DEPLOY_USER: root
+      DEPLOY_KEY: ${{ secrets.AUTOMATRON_DEPLOY_KEY }}
+      DEPLOY_PATH: /root/app/automatron-vmark
+      DEPLOY_PORT: 22
+      REPO_SSH_URL: git@github.com:${{ github.repository }}.git
+      DEPLOY_BRANCH: main
+    steps:
+      - name: Validate deployment secret
+        run: |
+          if [ -z "${DEPLOY_KEY}" ]; then
+            echo "::error::Missing required secret: AUTOMATRON_DEPLOY_KEY"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${DEPLOY_PORT:-22}" -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Git deploy + rebuild Automatron
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" <<'SSHEOF'
+          set -euo pipefail
+
+          REPO_SSH_URL="git@github.com:Quitcode-Dev/project-automatron-vmark.git"
+          DEPLOY_PATH="/root/app/automatron-vmark"
+          DEPLOY_BRANCH="main"
+
+          if [ ! -f "/root/.ssh/automatron_deploy" ]; then
+            echo "[deploy] Missing server deploy key: /root/.ssh/automatron_deploy" >&2
+            exit 1
+          fi
+          ssh-keyscan -H github.com >> /root/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i /root/.ssh/automatron_deploy -o IdentitiesOnly=yes"
+
+          mkdir -p "${DEPLOY_PATH}"
+
+          if [ ! -d "${DEPLOY_PATH}/.git" ]; then
+            echo "[deploy] No .git found; cloning ${REPO_SSH_URL} (${DEPLOY_BRANCH})"
+            env_backup=""
+            if [ -f "${DEPLOY_PATH}/.env" ]; then
+              env_backup="$(mktemp)"
+              cp "${DEPLOY_PATH}/.env" "${env_backup}"
+            fi
+            rm -rf "${DEPLOY_PATH}"
+            git clone --branch "${DEPLOY_BRANCH}" "${REPO_SSH_URL}" "${DEPLOY_PATH}"
+            if [ -n "${env_backup}" ]; then
+              cp "${env_backup}" "${DEPLOY_PATH}/.env"
+              rm -f "${env_backup}"
+            fi
+          fi
+
+          cd "${DEPLOY_PATH}"
+
+          echo "[deploy] Fetching and resetting to origin/${DEPLOY_BRANCH}"
+          git remote set-url origin "${REPO_SSH_URL}"
+          git fetch --prune origin "${DEPLOY_BRANCH}"
+          git checkout -B "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}"
+          git reset --hard "origin/${DEPLOY_BRANCH}"
+
+          echo "[deploy] Rebuilding and restarting containers"
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --remove-orphans
+          SSHEOF
+
+      - name: Send Webhook Notification
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.AUTOMATRON_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "${WEBHOOK_URL}" ]; then
+            echo "::warning::Missing secret: AUTOMATRON_WEBHOOK_URL. Skipping notification."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"status\": \"${JOB_STATUS}\"}" \
+            -- "${WEBHOOK_URL}" || echo "::warning::Webhook notification failed."
