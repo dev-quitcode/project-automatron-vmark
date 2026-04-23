@@ -13,6 +13,7 @@ services:
       - "traefik.http.routers.automatron-api.rule=Host(`automatron.quitcode.com`) && (PathPrefix(`/api`) || Path(`/health`) || PathPrefix(`/socket.io`))"
       - "traefik.http.routers.automatron-api.entrypoints=websecure"
       - "traefik.http.routers.automatron-api.tls.certresolver=le"
+      - "traefik.http.routers.automatron-api.priority=10"
       - "traefik.http.services.automatron-api.loadbalancer.server.port=8000"
 
   web-ui:
@@ -33,6 +34,7 @@ services:
       - "traefik.http.routers.automatron.rule=Host(`automatron.quitcode.com`)"
       - "traefik.http.routers.automatron.entrypoints=websecure"
       - "traefik.http.routers.automatron.tls.certresolver=le"
+      - "traefik.http.routers.automatron.priority=1"
       - "traefik.http.services.automatron.loadbalancer.server.port=3000"
       - "traefik.http.middlewares.automatron-redirect.redirectscheme.scheme=https"
 
