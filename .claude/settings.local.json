@@ -4,7 +4,17 @@
       "Bash(find 'd:\\\\Work\\\\Project Automatron\\\\web-ui\\\\src' -type f \\\\\\(-name *.tsx -o -name *.ts -o -name *.test.tsx -o -name *.test.ts \\\\\\))",
       "Bash(find 'd:\\\\Work\\\\Project Automatron' -type f \\\\\\(-name *.test.ts -o -name *.test.tsx -o -name *.spec.ts -o -name *.spec.tsx \\\\\\))",
       "Bash(pip3 install:*)",
-      "Bash(python3 -m pytest tests/ -x -q)"
+      "Bash(python3 -m pytest tests/ -x -q)",
+      "Bash(xargs ls *)",
+      "Bash(python -c \"from orchestrator.deployment_v2 import get_strategy, DeploymentProfile, DeploymentSecrets; s = get_strategy\\('kamal'\\); print\\('ok', s.name, s.version\\)\")",
+      "Bash(python -m py_compile orchestrator/deployment_v2/__init__.py orchestrator/deployment_v2/profile.py orchestrator/deployment_v2/strategy.py orchestrator/deployment_v2/registry.py orchestrator/deployment_v2/templates.py orchestrator/deployment_v2/stack_detector.py orchestrator/deployment_v2/artifacts.py orchestrator/deployment_v2/kamal/__init__.py orchestrator/deployment_v2/kamal/secrets.py orchestrator/deployment_v2/kamal/probes.py orchestrator/deployment_v2/kamal/strategy.py orchestrator/deployment_v2/kamal/config.py orchestrator/models/stages.py orchestrator/models/project.py orchestrator/api/routes.py orchestrator/orchestrator.py orchestrator/github_actions/manager.py orchestrator/repository/manager.py orchestrator/validation/preflight.py)",
+      "Bash(python -m py_compile tests/deployment_v2/test_stack_detector.py tests/deployment_v2/test_kamal_strategy.py tests/deployment_v2/test_template_renderer.py tests/deployment_v2/test_security_regression.py tests/test_github_actions_manager.py)",
+      "Bash(pip install *)",
+      "Bash(python -m pytest tests/deployment_v2/ -x --tb=short)",
+      "Bash(python -m pytest tests/test_github_actions_manager.py tests/test_preflight.py tests/test_repository_manager.py tests/test_routes_contract.py --tb=short)",
+      "Bash(python -c \"from orchestrator.api import routes; print\\('routes ok'\\); from orchestrator.orchestrator import orch_deploy, orch_generate_deploy_artifacts, orch_plan_deployment, orch_sync_deploy; print\\('orchestrator hooks ok'\\); from orchestrator.deployment_v2 import get_strategy; s = get_strategy\\('kamal'\\); print\\('strategy:', s.name, s.version\\)\")",
+      "Bash(python -m pytest --tb=line -q)",
+      "Bash(python -m pytest tests/deployment_v2/ tests/test_github_actions_manager.py tests/test_llm_catalog.py tests/test_llm_configuration.py tests/test_plan_parser.py tests/test_deployment_manager.py tests/test_execution_contract.py --tb=line -q)"
     ]
   }
 }

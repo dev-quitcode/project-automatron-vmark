@@ -112,6 +112,8 @@ class RepositoryManager:
         repo_name: str,
         deploy_target: dict[str, Any],
     ) -> list[str]:
+        # DEPRECATED: legacy SSH path. New projects should use
+        # `configure_remote_deployment_v2`.
         await self.actions_manager.ensure_environment(
             repo_name,
             environment_name=settings.github_environment_name,
@@ -120,6 +122,29 @@ class RepositoryManager:
             repo_name,
             deploy_target,
             environment_name=settings.github_environment_name,
+        )
+
+    async def configure_remote_deployment_v2(
+        self,
+        repo_name: str,
+        secret_payload: dict[str, str],
+        *,
+        environment_name: str | None = None,
+    ) -> list[str]:
+        """Ensure GitHub environment and upsert raw `name -> value` secrets.
+
+        Caller is expected to scrub the secret payload after this returns.
+        Returns the sorted list of secret names that were upserted.
+        """
+        environment = environment_name or settings.github_environment_name
+        await self.actions_manager.ensure_environment(
+            repo_name,
+            environment_name=environment,
+        )
+        return await self.actions_manager.upsert_secret_pairs(
+            repo_name,
+            secret_payload,
+            environment_name=environment,
         )
 
     async def sync_remote_cicd_status(

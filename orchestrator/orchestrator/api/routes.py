@@ -8,9 +8,10 @@ from typing import Any, Literal
 
 import io
 import json
+import re
 import zipfile
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from orchestrator.llm.catalog import get_all_provider_model_catalogs, get_provider_model_catalog
@@ -28,6 +29,7 @@ from orchestrator.models.project import (
     list_github_issues,
     update_project,
     update_project_deploy_target,
+    update_project_deployment,
     update_project_llm_config,
     update_project_plan,
     update_project_stage,
@@ -38,11 +40,18 @@ from orchestrator.orchestrator import (
     assign_to_copilot as orch_assign_copilot,
     assign_to_copilot_issue as orch_assign_copilot_issue,
     audit_project as orch_audit_project,
+    orch_deploy,
+    orch_generate_deploy_artifacts,
+    orch_plan_deployment,
+    orch_sync_deploy,
     resume_project as orch_resume,
     review_pr as orch_review_pr,
     start_project as orch_start,
     sync_issues as orch_sync_issues,
 )
+from orchestrator.deployment_v2 import get_strategy
+from orchestrator.deployment_v2.kamal.config import KamalConfig
+from orchestrator.deployment_v2.profile import DeploymentProfile, DeploymentSecrets
 from orchestrator.validation.preflight import PreflightResult, PreflightService
 from orchestrator.repository.manager import RepositoryManager
 
@@ -86,19 +95,52 @@ class ApproveRequest(BaseModel):
     feedback: str | None = None
 
 
-class DeployTargetRequest(BaseModel):
-    auth_mode: Literal["ssh_key", "password"] = "ssh_key"
+class DeployTargetConfig(BaseModel):
+    """Persisted deployment configuration (no secret values)."""
+
+    strategy: Literal["kamal"] = "kamal"
     host: str
-    port: int = 22
-    user: str
-    deploy_path: str
-    auth_reference: str | None = None
-    ssh_private_key: str | None = None
-    ssh_password: str | None = None
-    known_hosts: str | None = None
-    env_content: str | None = None
-    app_url: str | None = None
-    health_path: str | None = "/api/health"
+    ssh_user: str
+    ssh_port: int = 22
+    domain: str
+    container_port: int = 3000
+    health_path: str = "/api/health"
+    registry: Literal["ghcr.io"] = "ghcr.io"
+    registry_username: str
+    image: str | None = None
+    clear_env: dict[str, str] = Field(default_factory=dict)
+    secret_env_names: list[str] = Field(default_factory=list)
+    auto_deploy_on_main: bool = False
+    artifacts_push_mode: Literal["pr", "direct"] = "pr"
+
+
+class DeployTargetSecretsBody(BaseModel):
+    """Write-only secrets, immediately upserted to GitHub Environment Secrets."""
+
+    ssh_private_key: str
+    registry_password: str
+    secret_env_values: dict[str, str] = Field(default_factory=dict)
+
+
+class DeployTargetRequest(BaseModel):
+    config: DeployTargetConfig
+    secrets: DeployTargetSecretsBody
+
+
+class GenerateArtifactsRequest(BaseModel):
+    pass
+
+
+class DeployRequest(BaseModel):
+    pass
+
+
+class RollbackRequest(BaseModel):
+    rollback_to: str | None = None
+
+
+class DeployPreflightRequest(BaseModel):
+    phase: Literal["generate_artifacts", "setup", "deploy", "health_verify"] = "deploy"
 
 
 class ProjectResponse(BaseModel):
@@ -383,12 +425,22 @@ async def api_stop_project(project_id: str) -> dict[str, str]:
 
 
 @router.put("/projects/{project_id}/deploy-target")
-async def api_update_deploy_target(project_id: str, req: DeployTargetRequest) -> dict[str, str]:
+async def api_update_deploy_target(project_id: str, req: DeployTargetRequest) -> dict[str, Any]:
+    """Validate config, persist it, and write-through secrets to GitHub.
+
+    Secret values are scrubbed from memory after upsert. Persisted state
+    contains only the secret names.
+    """
     project = await _get_required_project(project_id)
-    deploy_target = preflight_service.normalize_deploy_target(req.model_dump())
-    target_checks = preflight_service.validate_deploy_target_shape(deploy_target)
-    blocking_checks = [check for check in target_checks if check.status == "blocking"]
-    if blocking_checks:
+    repo_name = project.get("repo_name") or project.get("github_repo_name")
+    if not repo_name:
+        raise HTTPException(status_code=409, detail="Project has no GitHub repo configured")
+
+    strategy = get_strategy(req.config.strategy)
+    config_dict = req.config.model_dump()
+    validation = strategy.validate_config(config_dict)
+    blocking = [c for c in validation if c.status == "blocking"]
+    if blocking:
         raise HTTPException(
             status_code=422,
             detail={
@@ -396,20 +448,171 @@ async def api_update_deploy_target(project_id: str, req: DeployTargetRequest) ->
                 "ok": False,
                 "blocking": True,
                 "checks": [
-                    {
-                        "code": check.code,
-                        "status": check.status,
-                        "message": check.message,
-                        "details": check.details,
-                    }
-                    for check in target_checks
+                    {"code": c.code, "status": c.status, "message": c.message, "details": c.details}
+                    for c in validation
                 ],
             },
         )
-    if project.get("repo_name"):
-        await repository_manager.configure_remote_cicd_for_target(project["repo_name"], deploy_target)
-    await update_project_deploy_target(project_id, deploy_target)
-    return {"status": "configured", "project_id": project_id}
+
+    # Merge config into the existing detector profile so we keep framework /
+    # next_output / health_route_files intact.
+    existing_profile = project.get("deployment_profile") or {}
+    if existing_profile:
+        profile = DeploymentProfile.from_dict(existing_profile)
+    else:
+        profile = strategy.detect_requirements(project)
+    profile = strategy.merge_config_into_profile(profile, config_dict)
+    profile.environment_name = project.get("github_environment_name") or "production"
+
+    secrets = DeploymentSecrets(
+        ssh_private_key=req.secrets.ssh_private_key,
+        registry_password=req.secrets.registry_password,
+        secret_env_values=dict(req.secrets.secret_env_values),
+    )
+    secret_payload = strategy.secrets_payload(profile, secrets)
+
+    secret_names = await repository_manager.configure_remote_deployment_v2(
+        repo_name,
+        secret_payload,
+        environment_name=profile.environment_name,
+    )
+    secrets.scrub()
+    secret_payload.clear()
+
+    await update_project_deploy_target(project_id, config_dict)
+    await update_project_deployment(
+        project_id,
+        deployment_strategy=req.config.strategy,
+        deployment_profile=profile.to_dict(),
+        deployment_secret_names=secret_names,
+        auto_deploy_on_main=req.config.auto_deploy_on_main,
+        artifacts_push_mode=req.config.artifacts_push_mode,
+    )
+    await update_project_stage(project_id, "deploy_target_configured")
+    return {
+        "status": "configured",
+        "project_id": project_id,
+        "secret_names": secret_names,
+        "stage": "deploy_target_configured",
+    }
+
+
+@router.post("/projects/{project_id}/generate-deploy-artifacts")
+async def api_generate_deploy_artifacts(
+    project_id: str,
+    req: GenerateArtifactsRequest | None = None,
+) -> dict[str, Any]:
+    await _get_required_project(project_id)
+    fingerprint = await orch_generate_deploy_artifacts(project_id)
+    return {
+        "status": "generated",
+        "project_id": project_id,
+        "fingerprint": fingerprint,
+    }
+
+
+@router.post("/projects/{project_id}/deploy-preflight", response_model=PreflightResponse)
+async def api_deploy_preflight(project_id: str, req: DeployPreflightRequest) -> Any:
+    project = await _get_required_project(project_id)
+    return await preflight_service.run_v2(project, req.phase)
+
+
+@router.post("/projects/{project_id}/deploy")
+async def api_deploy(project_id: str, req: DeployRequest | None = None) -> dict[str, Any]:
+    await _get_required_project(project_id)
+    result = await orch_deploy(project_id, action="deploy")
+    return {"status": "dispatched", "project_id": project_id, **result}
+
+
+@router.post("/projects/{project_id}/setup")
+async def api_setup(project_id: str, req: DeployRequest | None = None) -> dict[str, Any]:
+    await _get_required_project(project_id)
+    result = await orch_deploy(project_id, action="setup")
+    return {"status": "dispatched", "project_id": project_id, **result}
+
+
+@router.post("/projects/{project_id}/rollback")
+async def api_rollback(project_id: str, req: RollbackRequest) -> dict[str, Any]:
+    await _get_required_project(project_id)
+    try:
+        result = await orch_deploy(project_id, action="rollback", rollback_to=req.rollback_to)
+    except RuntimeError as exc:
+        if str(exc) == "rollback_no_previous_deploy":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "rollback_no_previous_deploy",
+                    "message": "No previous successful deploy is recorded for this project",
+                },
+            )
+        raise
+    return {"status": "dispatched", "project_id": project_id, **result}
+
+
+@router.get("/projects/{project_id}/deploy-status")
+async def api_deploy_status(project_id: str) -> dict[str, Any]:
+    await _get_required_project(project_id)
+    return await orch_sync_deploy(project_id)
+
+
+_LOG_REDACT_PATTERN = re.compile(
+    r"(KAMAL_REGISTRY_PASSWORD|KAMAL_SSH_PRIVATE_KEY)=([^\r\n]*)",
+    re.IGNORECASE,
+)
+
+
+@router.get("/projects/{project_id}/deploy-logs")
+async def api_deploy_logs(project_id: str) -> Response:
+    project = await _get_required_project(project_id)
+    repo_name = project.get("repo_name") or project.get("github_repo_name")
+    run_id = project.get("last_deploy_run_id")
+    if not repo_name or not run_id:
+        raise HTTPException(status_code=404, detail="No deploy run available")
+
+    from orchestrator.github_actions.manager import GitHubActionsManager
+
+    actions = GitHubActionsManager()
+    try:
+        zip_bytes = await actions.download_workflow_logs(repo_name, run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch logs: {exc}") from exc
+
+    secret_names = list(project.get("deployment_secret_names") or [])
+    redacted = _redact_log_secrets(zip_bytes, secret_names)
+    return Response(
+        content=redacted,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="deploy-{run_id}.zip"'},
+    )
+
+
+def _redact_log_secrets(zip_bytes: bytes, secret_names: list[str]) -> bytes:
+    """Walk a workflow logs zip and mask `SECRET=value` lines for known names."""
+    if not zip_bytes:
+        return zip_bytes
+    output = io.BytesIO()
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zin, zipfile.ZipFile(
+            output, "w", zipfile.ZIP_DEFLATED
+        ) as zout:
+            patterns = [_LOG_REDACT_PATTERN] + [
+                re.compile(rf"\b{re.escape(name)}=([^\r\n]*)", re.IGNORECASE)
+                for name in secret_names
+            ]
+            for info in zin.infolist():
+                with zin.open(info) as src:
+                    raw = src.read()
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    zout.writestr(info, raw)
+                    continue
+                for pattern in patterns:
+                    text = pattern.sub(lambda m: f"{m.group(0).split('=', 1)[0]}=***", text)
+                zout.writestr(info, text.encode("utf-8"))
+    except zipfile.BadZipFile:
+        return zip_bytes
+    return output.getvalue()
 
 
 @router.post("/projects/{project_id}/preflight", response_model=PreflightResponse)

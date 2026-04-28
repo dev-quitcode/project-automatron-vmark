@@ -1,0 +1,50 @@
+# Deployment
+
+This project is deployed by **Automatron** using **Kamal** to a single VPS.
+
+- **Domain:** `{{ domain }}`
+- **Service:** `{{ service_name }}`
+- **Image:** `{{ image }}`
+- **Container port:** `{{ container_port }}`
+- **Health check:** `{{ health_path }}`
+- **Environment:** `{{ environment_name }}`
+
+## How deploys happen
+
+Automatron triggers `.github/workflows/deploy.yml` via `workflow_dispatch`.
+The workflow:
+
+1. Installs Kamal (`gem install kamal -v {{ kamal_version }}`).
+2. Writes `.kamal/secrets` from GitHub Environment Secrets.
+3. Runs one of: `kamal setup`, `kamal deploy`, or `kamal rollback <version>`.
+
+`auto_deploy_on_main` is **{{ "enabled" if auto_deploy_on_main else "disabled" }}**.
+{% if not auto_deploy_on_main %}Pushes to `main` do **not** trigger production deploys; use Automatron.{% endif %}
+
+## Secrets (managed in GitHub Environment Secrets, never committed)
+
+- `KAMAL_REGISTRY_PASSWORD` — registry credential for `{{ registry }}`.
+- `KAMAL_SSH_PRIVATE_KEY` — SSH key Kamal uses to reach `{{ host }}`.
+{%- for name in secret_env_names %}
+- `{{ name }}` — application secret consumed by the container.
+{%- endfor %}
+
+## Rollback
+
+Trigger from Automatron — it supplies the previous image version recorded
+during the last successful deploy. Manual rollback via the Actions tab is
+also possible: dispatch `Deploy` with `action=rollback` and a `rollback_to`
+version.
+
+## Do not edit deployment files by hand
+
+The following paths are owned by Automatron templates and will be overwritten
+on the next "Generate artifacts" run:
+
+- `Dockerfile`
+- `.dockerignore`
+- `config/deploy.yml`
+- `.kamal/secrets.example`
+- `.github/workflows/ci.yml`
+- `.github/workflows/deploy.yml`
+- `DEPLOYMENT.md`

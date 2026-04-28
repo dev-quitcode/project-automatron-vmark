@@ -16,9 +16,9 @@ import { AlertPanel, LogStream, ProgressBar, StatusBadge } from "@/components/ui
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useProjectStore } from "@/stores/projectStore";
 import type {
-  DeployAuthMode,
   DeployTargetRequest,
   LlmProvider,
+  PreflightResult,
   ProjectLlmConfig,
   ProjectStage,
   ProviderModelCatalog,
@@ -51,9 +51,17 @@ const stageGroups: { id: ProjectStage; label: string; group: string }[] = [
     label: "Approve Preview",
     group: "Preview",
   },
+  { id: "deployment_planning", label: "Plan deploy", group: "Deploy" },
+  { id: "deploy_target_configured", label: "Target set", group: "Deploy" },
+  { id: "deployment_artifacts_generated", label: "Artifacts", group: "Deploy" },
+  { id: "deployment_preflight_passed", label: "Preflight ok", group: "Deploy" },
+  { id: "deployment_preflight_failed", label: "Preflight fail", group: "Deploy" },
   { id: "ready_for_deploy", label: "Ready", group: "Deploy" },
   { id: "deploying", label: "Deploying", group: "Deploy" },
   { id: "deployed", label: "Live", group: "Deploy" },
+  { id: "deploy_failed", label: "Failed", group: "Deploy" },
+  { id: "rolling_back", label: "Rolling back", group: "Deploy" },
+  { id: "rolled_back", label: "Rolled back", group: "Deploy" },
   { id: "frozen", label: "Frozen", group: "Build" },
   { id: "error", label: "Error", group: "Deploy" },
 ];
@@ -78,21 +86,40 @@ export default function ProjectPage() {
     Partial<Record<LlmProvider, boolean>>
   >({});
   const [deployTarget, setDeployTarget] = useState<DeployTargetRequest>({
-    auth_mode: "ssh_key",
-    host: "",
-    port: 22,
-    user: "",
-    deploy_path: "",
-    auth_reference: "",
-    ssh_private_key: "",
-    ssh_password: "",
-    known_hosts: "",
-    env_content: "",
-    app_url: "",
-    health_path: "/api/health",
+    config: {
+      strategy: "kamal",
+      host: "",
+      ssh_user: "",
+      ssh_port: 22,
+      domain: "",
+      container_port: 3000,
+      health_path: "/api/health",
+      registry: "ghcr.io",
+      registry_username: "",
+      image: null,
+      clear_env: {},
+      secret_env_names: [],
+      auto_deploy_on_main: false,
+      artifacts_push_mode: "pr",
+    },
+    secrets: {
+      ssh_private_key: "",
+      registry_password: "",
+      secret_env_values: {},
+    },
+  });
+  const [secretEnvDraft, setSecretEnvDraft] = useState<{ name: string; value: string }>({
+    name: "",
+    value: "",
   });
   const [isSavingLlmConfig, setIsSavingLlmConfig] = useState(false);
   const [isSavingDeployTarget, setIsSavingDeployTarget] = useState(false);
+  const [isGeneratingArtifacts, setIsGeneratingArtifacts] = useState(false);
+  const [isRunningDeployPreflight, setIsRunningDeployPreflight] = useState(false);
+  const [deployPreflight, setDeployPreflight] = useState<PreflightResult | null>(null);
+  const [isDispatchingDeploy, setIsDispatchingDeploy] = useState(false);
+  const [isDispatchingSetup, setIsDispatchingSetup] = useState(false);
+  const [isDispatchingRollback, setIsDispatchingRollback] = useState(false);
 
   const {
     currentProject,
@@ -191,23 +218,34 @@ export default function ProjectPage() {
 
   useEffect(() => {
     const target = currentProject?.deploy_target_summary;
-    if (!target) {
+    if (!target || target.strategy !== "kamal") {
       return;
     }
-    setDeployTarget({
-      auth_mode: target.auth_mode || "ssh_key",
-      host: target.host || "",
-      port: target.port || 22,
-      user: target.user || "",
-      deploy_path: target.deploy_path || "",
-      auth_reference: target.auth_reference || "",
-      ssh_private_key: "",
-      ssh_password: "",
-      known_hosts: "",
-      env_content: "",
-      app_url: target.app_url || "",
-      health_path: target.health_path || "/api/health",
-    });
+    setDeployTarget((current) => ({
+      config: {
+        strategy: "kamal",
+        host: target.host || "",
+        ssh_user: target.ssh_user || "",
+        ssh_port: target.ssh_port || 22,
+        domain: target.domain || "",
+        container_port: target.container_port || 3000,
+        health_path: target.health_path || "/api/health",
+        registry: "ghcr.io",
+        registry_username: target.registry_username || "",
+        image: target.image ?? null,
+        clear_env: current.config.clear_env,
+        secret_env_names: target.secret_names?.filter(
+          (name) => name !== "KAMAL_REGISTRY_PASSWORD" && name !== "KAMAL_SSH_PRIVATE_KEY"
+        ) ?? [],
+        auto_deploy_on_main: Boolean(target.auto_deploy_on_main),
+        artifacts_push_mode: target.artifacts_push_mode || "pr",
+      },
+      secrets: {
+        ssh_private_key: "",
+        registry_password: "",
+        secret_env_values: {},
+      },
+    }));
   }, [targetSummaryKey]);
 
   const handleApprove = (feedback?: string) => {
@@ -302,10 +340,87 @@ export default function ProjectPage() {
     try {
       await updateDeployTarget(projectId, deployTarget);
       await fetchProject(projectId);
+      // Scrub secrets from UI memory after successful upsert.
+      setDeployTarget((current) => ({
+        ...current,
+        secrets: {
+          ssh_private_key: "",
+          registry_password: "",
+          secret_env_values: {},
+        },
+      }));
     } finally {
       setIsSavingDeployTarget(false);
     }
   };
+
+  const handleGenerateArtifacts = async () => {
+    setIsGeneratingArtifacts(true);
+    try {
+      await api.generateDeployArtifacts(projectId);
+      await fetchProject(projectId);
+    } finally {
+      setIsGeneratingArtifacts(false);
+    }
+  };
+
+  const handleRunDeployPreflight = async () => {
+    setIsRunningDeployPreflight(true);
+    try {
+      const result = await api.runDeployPreflight(projectId, "deploy");
+      setDeployPreflight(result);
+    } finally {
+      setIsRunningDeployPreflight(false);
+    }
+  };
+
+  const handleDispatchSetup = async () => {
+    setIsDispatchingSetup(true);
+    try {
+      await api.setupDeploy(projectId);
+      await fetchProject(projectId);
+    } finally {
+      setIsDispatchingSetup(false);
+    }
+  };
+
+  const handleDispatchDeploy = async () => {
+    setIsDispatchingDeploy(true);
+    try {
+      await api.deployProject(projectId);
+      await fetchProject(projectId);
+    } finally {
+      setIsDispatchingDeploy(false);
+    }
+  };
+
+  const handleDispatchRollback = async () => {
+    setIsDispatchingRollback(true);
+    try {
+      await api.rollbackProject(projectId, null);
+      await fetchProject(projectId);
+    } finally {
+      setIsDispatchingRollback(false);
+    }
+  };
+
+  const updateConfigField = <K extends keyof DeployTargetRequest["config"]>(
+    field: K,
+    value: DeployTargetRequest["config"][K]
+  ) =>
+    setDeployTarget((current) => ({
+      ...current,
+      config: { ...current.config, [field]: value },
+    }));
+
+  const updateSecretField = <K extends keyof DeployTargetRequest["secrets"]>(
+    field: K,
+    value: DeployTargetRequest["secrets"][K]
+  ) =>
+    setDeployTarget((current) => ({
+      ...current,
+      secrets: { ...current.secrets, [field]: value },
+    }));
 
   const isRunning = ["planning", "building"].includes(
     currentProject?.status || ""
@@ -708,18 +823,22 @@ export default function ProjectPage() {
               </p>
               <div className="mt-3 space-y-2 text-sm">
                 <div className="flex justify-between gap-3">
-                  <span className="text-muted-foreground">Auth</span>
-                  <span>{currentProject.deploy_target_summary?.auth_mode || "ssh_key"}</span>
+                  <span className="text-muted-foreground">Strategy</span>
+                  <span>
+                    {currentProject.deploy_target_summary?.strategy || "not_configured"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">Domain</span>
+                  <span className="truncate text-right">
+                    {currentProject.deploy_target_summary?.domain ||
+                      currentProject.deploy_target_summary?.app_url ||
+                      "Not set"}
+                  </span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Host</span>
                   <span>{currentProject.deploy_target_summary?.host || "Not set"}</span>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <span className="text-muted-foreground">Path</span>
-                  <span className="truncate text-right">
-                    {currentProject.deploy_target_summary?.deploy_path || "Not set"}
-                  </span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Status</span>
@@ -887,212 +1006,387 @@ export default function ProjectPage() {
 
         {activeTab === "deploy" && (
           <div className="grid h-full gap-4 xl:grid-cols-[1fr_1.1fr]">
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-sm font-semibold">VPS Target</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    GitHub Actions deploys `main` to the target VPS. Secret fields
-                    are write-only and are stored in the `production` environment.
-                  </p>
-                </div>
-                <button
-                  onClick={() => void handleSaveDeployTarget()}
-                  disabled={isSavingDeployTarget}
-                  className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  <Save className="h-4 w-4" />
-                  {isSavingDeployTarget ? "Saving..." : "Save Target"}
-                </button>
-              </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">Host</span>
-                  <input
-                    value={deployTarget.host}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        host: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">Port</span>
-                  <input
-                    type="number"
-                    value={deployTarget.port ?? 22}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        port: Number(event.target.value) || 22,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">User</span>
-                  <input
-                    value={deployTarget.user}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        user: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">Deploy Path</span>
-                  <input
-                    value={deployTarget.deploy_path}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        deploy_path: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">Auth Mode</span>
-                  <select
-                    value={deployTarget.auth_mode}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        auth_mode: event.target.value as DeployAuthMode,
-                        ssh_private_key:
-                          event.target.value === "ssh_key" ? target.ssh_private_key ?? "" : "",
-                        ssh_password:
-                          event.target.value === "password" ? target.ssh_password ?? "" : "",
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
+            <div className="space-y-4">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold">Kamal Deploy Target</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Automatron generates Kamal artifacts for this project. Secrets
+                      are write-only and are immediately stored in GitHub Environment
+                      Secrets — they are never persisted in Automatron.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void handleSaveDeployTarget()}
+                    disabled={isSavingDeployTarget}
+                    className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    <option value="ssh_key">SSH key</option>
-                    <option value="password">Password</option>
-                  </select>
-                </label>
+                    <Save className="h-4 w-4" />
+                    {isSavingDeployTarget ? "Saving..." : "Save config + secrets"}
+                  </button>
+                </div>
 
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">Auth Reference</span>
-                  <input
-                    value={deployTarget.auth_reference ?? ""}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        auth_reference: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Domain</span>
+                    <input
+                      value={deployTarget.config.domain}
+                      onChange={(event) => updateConfigField("domain", event.target.value)}
+                      placeholder="app.client.com"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
 
-                {deployTarget.auth_mode === "ssh_key" ? (
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span className="text-muted-foreground">SSH Private Key</span>
-                    <textarea
-                      value={deployTarget.ssh_private_key ?? ""}
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">VPS Host (IP)</span>
+                    <input
+                      value={deployTarget.config.host}
+                      onChange={(event) => updateConfigField("host", event.target.value)}
+                      placeholder="123.123.123.123"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">SSH User</span>
+                    <input
+                      value={deployTarget.config.ssh_user}
+                      onChange={(event) => updateConfigField("ssh_user", event.target.value)}
+                      placeholder="root"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">SSH Port</span>
+                    <input
+                      type="number"
+                      value={deployTarget.config.ssh_port ?? 22}
                       onChange={(event) =>
-                        setDeployTarget((target) => ({
-                          ...target,
-                          ssh_private_key: event.target.value,
-                        }))
+                        updateConfigField("ssh_port", Number(event.target.value) || 22)
+                      }
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Container Port</span>
+                    <input
+                      type="number"
+                      value={deployTarget.config.container_port ?? 3000}
+                      onChange={(event) =>
+                        updateConfigField("container_port", Number(event.target.value) || 3000)
+                      }
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Health Path</span>
+                    <input
+                      value={deployTarget.config.health_path ?? ""}
+                      onChange={(event) => updateConfigField("health_path", event.target.value)}
+                      placeholder="/api/health"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">GHCR Username</span>
+                    <input
+                      value={deployTarget.config.registry_username}
+                      onChange={(event) =>
+                        updateConfigField("registry_username", event.target.value)
+                      }
+                      placeholder="github-username-or-org"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Image (override)</span>
+                    <input
+                      value={deployTarget.config.image ?? ""}
+                      onChange={(event) =>
+                        updateConfigField("image", event.target.value || null)
+                      }
+                      placeholder="ghcr.io/owner/repo (auto)"
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Artifacts push mode</span>
+                    <select
+                      value={deployTarget.config.artifacts_push_mode ?? "pr"}
+                      onChange={(event) =>
+                        updateConfigField(
+                          "artifacts_push_mode",
+                          event.target.value === "direct" ? "direct" : "pr"
+                        )
+                      }
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    >
+                      <option value="pr">Open PR (recommended)</option>
+                      <option value="direct">Push directly to main</option>
+                    </select>
+                  </label>
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={deployTarget.config.auto_deploy_on_main ?? false}
+                      onChange={(event) =>
+                        updateConfigField("auto_deploy_on_main", event.target.checked)
+                      }
+                    />
+                    <span className="text-muted-foreground">
+                      Auto-deploy on push to main
+                    </span>
+                  </label>
+
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="text-muted-foreground">
+                      SSH Private Key (write-only)
+                    </span>
+                    <textarea
+                      value={deployTarget.secrets.ssh_private_key}
+                      onChange={(event) =>
+                        updateSecretField("ssh_private_key", event.target.value)
                       }
                       rows={5}
-                      placeholder="Write-only. Paste the private key used by GitHub Actions for SSH deploy."
-                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                    />
-                  </label>
-                ) : (
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span className="text-muted-foreground">SSH Password</span>
-                    <textarea
-                      value={deployTarget.ssh_password ?? ""}
-                      onChange={(event) =>
-                        setDeployTarget((target) => ({
-                          ...target,
-                          ssh_password: event.target.value,
-                        }))
+                      placeholder={
+                        currentProject.deployment_secret_names?.includes("KAMAL_SSH_PRIVATE_KEY")
+                          ? "••• stored in GitHub Environment Secrets. Paste a new key only to rotate."
+                          : "Paste an ed25519 private key — stored in GitHub Environment Secrets, never in Automatron."
                       }
-                      rows={3}
-                      placeholder="Write-only. Stored as a GitHub environment secret for password-based SSH deploy."
                       className="w-full rounded-lg border border-input bg-background px-3 py-2"
                     />
                   </label>
+
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="text-muted-foreground">
+                      GHCR PAT (write-only, write:packages)
+                    </span>
+                    <input
+                      type="password"
+                      value={deployTarget.secrets.registry_password}
+                      onChange={(event) =>
+                        updateSecretField("registry_password", event.target.value)
+                      }
+                      placeholder={
+                        currentProject.deployment_secret_names?.includes("KAMAL_REGISTRY_PASSWORD")
+                          ? "••• stored. Paste new value to rotate."
+                          : "ghp_..."
+                      }
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+
+                  <div className="md:col-span-2 space-y-2 rounded-lg border border-dashed border-border p-3 text-sm">
+                    <div className="text-muted-foreground">
+                      Application secret env vars (write-only)
+                    </div>
+                    {(deployTarget.config.secret_env_names ?? []).map((name) => (
+                      <div key={name} className="flex items-center gap-2">
+                        <span className="font-mono text-xs">{name}</span>
+                        <input
+                          type="password"
+                          value={
+                            deployTarget.secrets.secret_env_values?.[name] ?? ""
+                          }
+                          onChange={(event) =>
+                            setDeployTarget((current) => ({
+                              ...current,
+                              secrets: {
+                                ...current.secrets,
+                                secret_env_values: {
+                                  ...(current.secrets.secret_env_values ?? {}),
+                                  [name]: event.target.value,
+                                },
+                              },
+                            }))
+                          }
+                          placeholder={
+                            currentProject.deployment_secret_names?.includes(name)
+                              ? "••• stored"
+                              : "value"
+                          }
+                          className="flex-1 rounded-lg border border-input bg-background px-3 py-2"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDeployTarget((current) => ({
+                              ...current,
+                              config: {
+                                ...current.config,
+                                secret_env_names: (
+                                  current.config.secret_env_names ?? []
+                                ).filter((n) => n !== name),
+                              },
+                              secrets: {
+                                ...current.secrets,
+                                secret_env_values: Object.fromEntries(
+                                  Object.entries(
+                                    current.secrets.secret_env_values ?? {}
+                                  ).filter(([k]) => k !== name)
+                                ),
+                              },
+                            }))
+                          }
+                          className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={secretEnvDraft.name}
+                        onChange={(event) =>
+                          setSecretEnvDraft((draft) => ({ ...draft, name: event.target.value }))
+                        }
+                        placeholder="DATABASE_URL"
+                        className="flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs"
+                      />
+                      <input
+                        type="password"
+                        value={secretEnvDraft.value}
+                        onChange={(event) =>
+                          setSecretEnvDraft((draft) => ({ ...draft, value: event.target.value }))
+                        }
+                        placeholder="value"
+                        className="flex-1 rounded-lg border border-input bg-background px-3 py-2"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const name = secretEnvDraft.name.trim().toUpperCase();
+                          if (!name) return;
+                          setDeployTarget((current) => ({
+                            ...current,
+                            config: {
+                              ...current.config,
+                              secret_env_names: Array.from(
+                                new Set([...(current.config.secret_env_names ?? []), name])
+                              ),
+                            },
+                            secrets: {
+                              ...current.secrets,
+                              secret_env_values: {
+                                ...(current.secrets.secret_env_values ?? {}),
+                                [name]: secretEnvDraft.value,
+                              },
+                            },
+                          }));
+                          setSecretEnvDraft({ name: "", value: "" });
+                        }}
+                        className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => void handleGenerateArtifacts()}
+                    disabled={isGeneratingArtifacts}
+                    className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    <Workflow className="h-4 w-4" />
+                    {isGeneratingArtifacts ? "Generating..." : "Generate artifacts"}
+                  </button>
+                  <button
+                    onClick={() => void handleRunDeployPreflight()}
+                    disabled={isRunningDeployPreflight}
+                    className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    {isRunningDeployPreflight ? "Running..." : "Run preflight"}
+                  </button>
+                  <button
+                    onClick={() => void handleDispatchSetup()}
+                    disabled={isDispatchingSetup}
+                    className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    <Server className="h-4 w-4" />
+                    {isDispatchingSetup ? "Dispatching..." : "Setup VPS"}
+                  </button>
+                  <button
+                    onClick={() => void handleDispatchDeploy()}
+                    disabled={isDispatchingDeploy}
+                    className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <Rocket className="h-4 w-4" />
+                    {isDispatchingDeploy ? "Dispatching..." : "Deploy"}
+                  </button>
+                  <button
+                    onClick={() => void handleDispatchRollback()}
+                    disabled={
+                      isDispatchingRollback ||
+                      currentProject.deploy_status !== "deployed"
+                    }
+                    className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {isDispatchingRollback ? "Dispatching..." : "Rollback"}
+                  </button>
+                </div>
+                {deployPreflight && (
+                  <div className="mt-3 space-y-1 text-xs">
+                    {deployPreflight.checks.map((check) => (
+                      <div
+                        key={check.code}
+                        className={
+                          check.status === "blocking"
+                            ? "text-red-500"
+                            : check.status === "warning"
+                            ? "text-amber-500"
+                            : "text-emerald-500"
+                        }
+                      >
+                        [{check.status}] {check.code}: {check.message}
+                      </div>
+                    ))}
+                  </div>
                 )}
-
-                <label className="space-y-1 text-sm md:col-span-2">
-                  <span className="text-muted-foreground">Known Hosts</span>
-                  <textarea
-                    value={deployTarget.known_hosts ?? ""}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        known_hosts: event.target.value,
-                      }))
-                    }
-                    rows={3}
-                    placeholder="Optional. Leave blank to let Actions use ssh-keyscan."
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm md:col-span-2">
-                  <span className="text-muted-foreground">Environment File</span>
-                  <textarea
-                    value={deployTarget.env_content ?? ""}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        env_content: event.target.value,
-                      }))
-                    }
-                    rows={4}
-                    placeholder="Optional. Stored as a GitHub environment secret and written to .env during deploy."
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm">
-                  <span className="text-muted-foreground">App URL</span>
-                  <input
-                    value={deployTarget.app_url ?? ""}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        app_url: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
-
-                <label className="space-y-1 text-sm md:col-span-2">
-                  <span className="text-muted-foreground">Health Path</span>
-                  <input
-                    value={deployTarget.health_path ?? ""}
-                    onChange={(event) =>
-                      setDeployTarget((target) => ({
-                        ...target,
-                        health_path: event.target.value,
-                      }))
-                    }
-                    placeholder="/api/health"
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2"
-                  />
-                </label>
+                {currentProject.deploy_artifacts_fingerprint &&
+                  "commit_sha" in (currentProject.deploy_artifacts_fingerprint as object) && (
+                    <div className="mt-3 rounded-lg border border-dashed border-border p-3 text-xs">
+                      <div className="font-semibold">Artifacts fingerprint</div>
+                      <div className="mt-1 space-y-0.5 font-mono text-muted-foreground">
+                        <div>
+                          branch:{" "}
+                          {(currentProject.deploy_artifacts_fingerprint as any).branch}
+                        </div>
+                        <div>
+                          commit:{" "}
+                          {(currentProject.deploy_artifacts_fingerprint as any)
+                            .commit_sha?.slice(0, 12)}
+                        </div>
+                        {(currentProject.deploy_artifacts_fingerprint as any).pr_url && (
+                          <div>
+                            <a
+                              href={
+                                (currentProject.deploy_artifacts_fingerprint as any).pr_url
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline"
+                            >
+                              Open deploy artifacts PR
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
               </div>
             </div>
 

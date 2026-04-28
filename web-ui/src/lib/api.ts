@@ -1,8 +1,11 @@
 import type {
   BuilderLog,
   ChatMessage,
+  DeployArtifactsResponse,
   DeployRun,
+  DeployStatus,
   DeployTargetRequest,
+  DeploymentPreflightPhase,
   GithubIssue,
   LlmProvider,
   ProviderModelCatalog,
@@ -187,12 +190,50 @@ export async function getPreviewUrl(
 
 export async function rollbackProject(
   projectId: string,
-  checkpointId: string
+  rollbackTo?: string | null
 ): Promise<{ status: string }> {
   return request(`/api/projects/${projectId}/rollback`, {
     method: "POST",
-    body: JSON.stringify({ checkpoint_id: checkpointId }),
+    body: JSON.stringify({ rollback_to: rollbackTo ?? null }),
   });
+}
+
+export async function generateDeployArtifacts(
+  projectId: string
+): Promise<DeployArtifactsResponse> {
+  return request(`/api/projects/${projectId}/generate-deploy-artifacts`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function runDeployPreflight(
+  projectId: string,
+  phase: DeploymentPreflightPhase = "deploy"
+): Promise<PreflightResult> {
+  return request(`/api/projects/${projectId}/deploy-preflight`, {
+    method: "POST",
+    body: JSON.stringify({ phase }),
+  });
+}
+
+export async function setupDeploy(
+  projectId: string
+): Promise<DeployStatus & { status: string }> {
+  return request(`/api/projects/${projectId}/setup`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function getDeployStatus(
+  projectId: string
+): Promise<DeployStatus> {
+  return request(`/api/projects/${projectId}/deploy-status`);
+}
+
+export function deployLogsUrl(projectId: string): string {
+  return `${API_URL}/api/projects/${projectId}/deploy-logs`;
 }
 
 export async function updateDeployTarget(

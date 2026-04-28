@@ -929,6 +929,278 @@ async def resume_project(project_id: str, approval_type: str, approved: bool = T
             await update_project(project_id, status="error", project_stage="error")
             await emit_error(project_id, f"{type(exc).__name__}: {exc}")
             raise
+    elif approval_type == "preview" and approved:
+        try:
+            await orch_plan_deployment(project_id)
+        except Exception as exc:
+            logger.error("resume_project (preview) failed for %s: %s", project_id, exc)
+            await update_project(project_id, project_stage="error")
+            await emit_error(project_id, f"{type(exc).__name__}: {exc}")
+            raise
+
+
+async def orch_plan_deployment(project_id: str) -> None:
+    """Run stack detection and store an initial DeploymentProfile.
+
+    Called when the user approves the preview. Sets the project into
+    `deployment_planning` so the UI can collect the deploy target config.
+    """
+    from orchestrator.deployment_v2 import get_strategy
+    from orchestrator.models.project import update_project_deployment
+
+    project = await get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Project not found: {project_id}")
+
+    strategy = get_strategy("kamal")
+    repo_files = await _fetch_detector_files(project, strategy)
+    profile = strategy.detect_requirements(project, repo_files=repo_files)
+
+    await update_project_deployment(
+        project_id,
+        deployment_strategy="kamal",
+        deployment_profile=profile.to_dict(),
+    )
+    await update_project(project_id, project_stage="deployment_planning")
+    await save_activity_log(
+        project_id,
+        seq=int(__import__("time").time()),
+        task_text=f"Detected stack: framework={profile.framework}, "
+        f"package_manager={profile.package_manager}, next_output={profile.next_output}",
+        status="INFO",
+    )
+
+
+async def _fetch_detector_files(project: dict[str, Any], strategy: Any) -> dict[str, str]:
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        return {}
+    client = GitHubClient()
+    files: dict[str, str] = {}
+    candidates = list(strategy.template_probe_files()) if hasattr(strategy, "template_probe_files") else []
+    for path in candidates:
+        try:
+            content = await client.read_file(owner, repo, path)
+        except Exception as exc:  # pragma: no cover — network errors
+            logger.debug("read_file %s/%s/%s failed: %s", owner, repo, path, exc)
+            continue
+        if content is not None:
+            files[path] = content
+    return files
+
+
+async def orch_generate_deploy_artifacts(project_id: str) -> dict[str, Any]:
+    """Render and push deployment artifacts to the child repo."""
+    from orchestrator.deployment_v2 import get_strategy
+    from orchestrator.deployment_v2.artifacts import ArtifactPusher
+    from orchestrator.deployment_v2.profile import DeploymentProfile
+    from orchestrator.models.project import update_project_deployment
+
+    project = await get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Project not found: {project_id}")
+
+    strategy_name = (project.get("deployment_strategy") or "").strip()
+    if strategy_name != "kamal":
+        raise RuntimeError("Project is not configured for Kamal deployment")
+
+    strategy = get_strategy(strategy_name)
+    profile_data = project.get("deployment_profile") or {}
+    if not profile_data:
+        raise RuntimeError("Deployment profile is not set; run plan-deployment first")
+    profile = DeploymentProfile.from_dict(profile_data)
+
+    artifacts = strategy.render_artifacts(profile)
+    workflows = strategy.workflow_files(profile)
+    files = {**artifacts, **workflows}
+
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        raise RuntimeError("Project has no GitHub repo configured")
+
+    pusher = ArtifactPusher(strategy_version=strategy.version)
+    fingerprint = await pusher.push(
+        owner=owner,
+        repo=repo,
+        profile=profile,
+        files=files,
+        mode=profile.artifacts_push_mode,
+    )
+
+    await update_project_deployment(
+        project_id,
+        deploy_artifacts_fingerprint=fingerprint.to_dict(),
+    )
+    await update_project(project_id, project_stage="deployment_artifacts_generated")
+    return fingerprint.to_dict()
+
+
+async def orch_deploy(
+    project_id: str,
+    *,
+    action: str = "deploy",
+    rollback_to: str | None = None,
+) -> dict[str, Any]:
+    """Trigger a Kamal deploy/setup/rollback via workflow_dispatch."""
+    from orchestrator.deployment_v2 import get_strategy
+    from orchestrator.deployment_v2.profile import DeploymentProfile
+    from orchestrator.github_actions.manager import GitHubActionsManager
+    from orchestrator.models.project import (
+        save_deploy_run,
+        update_project_deployment,
+        update_project_deploy_status,
+    )
+
+    if action not in {"setup", "deploy", "rollback"}:
+        raise ValueError(f"Unknown deploy action: {action!r}")
+
+    project = await get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Project not found: {project_id}")
+
+    if action == "rollback" and not _has_previous_successful_deploy(project):
+        raise RuntimeError("rollback_no_previous_deploy")
+
+    strategy_name = (project.get("deployment_strategy") or "").strip()
+    if strategy_name != "kamal":
+        raise RuntimeError("Project is not configured for Kamal deployment")
+    strategy = get_strategy(strategy_name)
+    profile = DeploymentProfile.from_dict(project.get("deployment_profile") or {})
+
+    automatron_run_id = uuid.uuid4().hex
+    if action == "rollback" and not rollback_to:
+        rollback_to = _last_successful_image_tag(project)
+
+    inputs = strategy.dispatch_inputs(
+        profile,
+        action=action,  # type: ignore[arg-type]
+        automatron_run_id=automatron_run_id,
+        rollback_to=rollback_to,
+    )
+
+    repo_name = project.get("repo_name") or project.get("github_repo_name") or ""
+    if not repo_name:
+        raise RuntimeError("Project has no repo_name")
+
+    actions = GitHubActionsManager()
+    await actions.dispatch_workflow(
+        repo_name,
+        ".github/workflows/deploy.yml",
+        ref=project.get("default_branch") or "main",
+        inputs=inputs,
+    )
+
+    await save_deploy_run(
+        run_id=automatron_run_id,
+        project_id=project_id,
+        status="pending",
+        branch=project.get("default_branch") or "main",
+        output="",
+        summary={"automatron_run_id": automatron_run_id, "action": action},
+    )
+
+    summary = await actions.match_run_by_correlation(
+        repo_name,
+        ".github/workflows/deploy.yml",
+        automatron_run_id,
+    )
+    next_stage = "rolling_back" if action == "rollback" else "deploying"
+    await update_project(project_id, project_stage=next_stage, status="deploying")
+    await update_project_deploy_status(
+        project_id,
+        deploy_status=summary.status or "queued",
+        last_deploy_run_id=summary.run_id,
+        deploy_run_url=summary.run_url,
+        deploy_commit_sha=summary.head_sha,
+    )
+    await update_project_deployment(
+        project_id,
+        automatron_deploy_run_id=automatron_run_id,
+    )
+    return {
+        "automatron_run_id": automatron_run_id,
+        "github_run_id": summary.run_id,
+        "status": summary.status,
+        "url": summary.run_url,
+        "action": action,
+    }
+
+
+async def orch_sync_deploy(project_id: str) -> dict[str, Any]:
+    """Refresh the latest workflow run status and update project stage."""
+    from orchestrator.github_actions.manager import GitHubActionsManager
+    from orchestrator.models.project import (
+        update_project_deploy_status,
+        upsert_deploy_run,
+    )
+
+    project = await get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Project not found: {project_id}")
+
+    repo_name = project.get("repo_name") or project.get("github_repo_name") or ""
+    run_id = project.get("last_deploy_run_id")
+    if not repo_name or not run_id:
+        return {"status": "not_configured"}
+
+    actions = GitHubActionsManager()
+    summary = await actions.get_workflow_run(repo_name, run_id)
+    stage_map = {
+        "deployed": "deployed",
+        "failed": "deploy_failed",
+        "running": "deploying",
+        "queued": "deploying",
+    }
+    stage = stage_map.get(summary.status, project.get("project_stage") or "deploying")
+    if project.get("project_stage") == "rolling_back":
+        if summary.status == "deployed":
+            stage = "rolled_back"
+        elif summary.status == "failed":
+            stage = "deploy_failed"
+        else:
+            stage = "rolling_back"
+
+    automatron_run_id = project.get("automatron_deploy_run_id") or run_id
+    await upsert_deploy_run(
+        run_id=automatron_run_id,
+        project_id=project_id,
+        status=summary.status,
+        branch=project.get("default_branch") or "main",
+        output="",
+        summary={
+            "automatron_run_id": automatron_run_id,
+            "github_run_id": summary.run_id,
+            "url": summary.run_url,
+            "head_sha": summary.head_sha,
+        },
+        deployed_at=summary.updated_at if summary.status == "deployed" else None,
+    )
+    await update_project_deploy_status(
+        project_id,
+        deploy_status=summary.status,
+        last_deploy_run_id=summary.run_id,
+        deploy_run_url=summary.run_url,
+        deploy_commit_sha=summary.head_sha,
+    )
+    await update_project(project_id, project_stage=stage)
+    return {
+        "stage": stage,
+        "status": summary.status,
+        "url": summary.run_url,
+        "github_run_id": summary.run_id,
+    }
+
+
+def _has_previous_successful_deploy(project: dict[str, Any]) -> bool:
+    last_status = (project.get("deploy_status") or "").lower()
+    return last_status == "deployed" and bool(project.get("deploy_commit_sha"))
+
+
+def _last_successful_image_tag(project: dict[str, Any]) -> str:
+    sha = project.get("deploy_commit_sha") or ""
+    return str(sha)[:12] if sha else ""
 
 
 async def sync_issues(project_id: str) -> None:

@@ -50,6 +50,13 @@ PROJECT_COLUMN_DEFS: dict[str, str] = {
     "deploy_run_url": "TEXT",
     "deploy_commit_sha": "TEXT",
     "deploy_target_json": "TEXT",
+    "deployment_strategy": "TEXT NOT NULL DEFAULT ''",
+    "deployment_profile_json": "TEXT",
+    "deployment_secret_names_json": "TEXT",
+    "deploy_artifacts_fingerprint_json": "TEXT",
+    "auto_deploy_on_main": "INTEGER NOT NULL DEFAULT 0",
+    "artifacts_push_mode": "TEXT NOT NULL DEFAULT 'pr'",
+    "automatron_deploy_run_id": "TEXT",
     "github_environment_name": "TEXT NOT NULL DEFAULT 'production'",
     "last_workflow_sync_at": "TEXT",
     "plan_approved": "INTEGER NOT NULL DEFAULT 0",
@@ -76,12 +83,15 @@ JSON_FIELDS = {
     "last_escalation_json",
     "builder_report_json",
     "deploy_target_json",
+    "deployment_profile_json",
+    "deployment_secret_names_json",
+    "deploy_artifacts_fingerprint_json",
     "preview_metadata_json",
     "approval_history_json",
     "issue_plan_json",
     "figma_urls_json",
 }
-BOOL_FIELDS = {"repo_ready", "plan_approved", "preview_approved"}
+BOOL_FIELDS = {"repo_ready", "plan_approved", "preview_approved", "auto_deploy_on_main"}
 JSON_FIELD_DEFAULTS: dict[str, Any] = {
     "stack_config_json": {},
     "llm_config_json": default_llm_config(),
@@ -92,6 +102,9 @@ JSON_FIELD_DEFAULTS: dict[str, Any] = {
     "last_escalation_json": {},
     "builder_report_json": {},
     "deploy_target_json": {},
+    "deployment_profile_json": {},
+    "deployment_secret_names_json": [],
+    "deploy_artifacts_fingerprint_json": {},
     "preview_metadata_json": {},
     "approval_history_json": [],
     "issue_plan_json": {},
@@ -135,7 +148,19 @@ def _serialize_project_row(row: aiosqlite.Row) -> dict[str, Any]:
 
     deploy_target = project.get("deploy_target_json") or {}
     project["deploy_target"] = deploy_target
-    project["deploy_target_summary"] = _summarize_deploy_target(deploy_target)
+    project["deployment_profile"] = project.get("deployment_profile_json") or {}
+    project["deployment_secret_names"] = project.get("deployment_secret_names_json") or []
+    project["deploy_artifacts_fingerprint"] = (
+        project.get("deploy_artifacts_fingerprint_json") or {}
+    )
+    project["deploy_target_summary"] = _summarize_deploy_target(
+        deploy_target,
+        strategy=project.get("deployment_strategy") or "",
+        secret_names=project.get("deployment_secret_names") or [],
+        fingerprint=project.get("deploy_artifacts_fingerprint") or {},
+        auto_deploy_on_main=bool(project.get("auto_deploy_on_main")),
+        artifacts_push_mode=project.get("artifacts_push_mode") or "pr",
+    )
     project["stack_config"] = project.get("stack_config_json") or {}
     project["llm_config"] = normalize_llm_config(project.get("llm_config_json") or {})
     project["execution_contract"] = project.get("execution_contract_json") or {}
@@ -152,19 +177,63 @@ def _serialize_project_row(row: aiosqlite.Row) -> dict[str, Any]:
     return project
 
 
-def _summarize_deploy_target(target: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not target:
+_REDACTED_FIELDS = frozenset(
+    {
+        "ssh_private_key",
+        "ssh_password",
+        "registry_password",
+        "secret_env_values",
+        "auth_reference",
+        "env_content",
+        "known_hosts",
+    }
+)
+
+
+def _summarize_deploy_target(
+    target: dict[str, Any] | None,
+    *,
+    strategy: str = "",
+    secret_names: list[str] | None = None,
+    fingerprint: dict[str, Any] | None = None,
+    auto_deploy_on_main: bool = False,
+    artifacts_push_mode: str = "pr",
+) -> dict[str, Any] | None:
+    if not target and not strategy:
         return None
 
+    target = target or {}
+    redacted = {k: v for k, v in target.items() if k not in _REDACTED_FIELDS}
+
+    if strategy == "kamal":
+        return {
+            "strategy": "kamal",
+            "host": redacted.get("host"),
+            "ssh_user": redacted.get("ssh_user"),
+            "ssh_port": redacted.get("ssh_port", 22),
+            "domain": redacted.get("domain"),
+            "container_port": redacted.get("container_port", 3000),
+            "health_path": redacted.get("health_path") or "/api/health",
+            "registry": redacted.get("registry") or "ghcr.io",
+            "registry_username": redacted.get("registry_username"),
+            "image": redacted.get("image"),
+            "clear_env_keys": sorted((redacted.get("clear_env") or {}).keys()),
+            "secret_names": list(secret_names or []),
+            "auto_deploy_on_main": bool(auto_deploy_on_main),
+            "artifacts_push_mode": artifacts_push_mode,
+            "fingerprint": fingerprint or None,
+        }
+
     return {
-        "auth_mode": target.get("auth_mode", "ssh_key"),
-        "host": target.get("host"),
-        "port": target.get("port", 22),
-        "user": target.get("user"),
-        "deploy_path": target.get("deploy_path"),
-        "auth_reference": target.get("auth_reference"),
-        "app_url": target.get("app_url"),
-        "health_path": target.get("health_path") or "/api/health",
+        "strategy": strategy or "legacy",
+        "auth_mode": "legacy_unsupported",
+        "host": redacted.get("host"),
+        "port": redacted.get("port", 22),
+        "user": redacted.get("user"),
+        "deploy_path": redacted.get("deploy_path"),
+        "app_url": redacted.get("app_url"),
+        "health_path": redacted.get("health_path") or "/api/health",
+        "secret_names": list(secret_names or []),
     }
 
 
@@ -232,6 +301,13 @@ async def init_db(db_path: str) -> None:
                 deploy_run_url TEXT,
                 deploy_commit_sha TEXT,
                 deploy_target_json TEXT,
+                deployment_strategy TEXT NOT NULL DEFAULT '',
+                deployment_profile_json TEXT,
+                deployment_secret_names_json TEXT,
+                deploy_artifacts_fingerprint_json TEXT,
+                auto_deploy_on_main INTEGER NOT NULL DEFAULT 0,
+                artifacts_push_mode TEXT NOT NULL DEFAULT 'pr',
+                automatron_deploy_run_id TEXT,
                 github_environment_name TEXT NOT NULL DEFAULT 'production',
                 last_workflow_sync_at TEXT,
                 plan_approved INTEGER NOT NULL DEFAULT 0,
@@ -469,6 +545,18 @@ def _normalize_update_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized["builder_report_json"] = _json_dumps(normalized.pop("builder_report"))
     if "deploy_target" in normalized:
         normalized["deploy_target_json"] = _json_dumps(normalized.pop("deploy_target"))
+    if "deployment_profile" in normalized:
+        normalized["deployment_profile_json"] = _json_dumps(
+            normalized.pop("deployment_profile")
+        )
+    if "deployment_secret_names" in normalized:
+        normalized["deployment_secret_names_json"] = _json_dumps(
+            normalized.pop("deployment_secret_names")
+        )
+    if "deploy_artifacts_fingerprint" in normalized:
+        normalized["deploy_artifacts_fingerprint_json"] = _json_dumps(
+            normalized.pop("deploy_artifacts_fingerprint")
+        )
     if "preview_metadata" in normalized:
         normalized["preview_metadata_json"] = _json_dumps(normalized.pop("preview_metadata"))
     if "approval_history" in normalized:
@@ -543,6 +631,37 @@ async def update_project_preview(
 
 async def update_project_deploy_target(project_id: str, deploy_target: dict[str, Any]) -> None:
     await update_project(project_id, deploy_target=deploy_target, deploy_status="configured")
+
+
+async def update_project_deployment(
+    project_id: str,
+    *,
+    deployment_strategy: str | None = None,
+    deployment_profile: dict[str, Any] | None = None,
+    deployment_secret_names: list[str] | None = None,
+    deploy_artifacts_fingerprint: dict[str, Any] | None = None,
+    auto_deploy_on_main: bool | None = None,
+    artifacts_push_mode: str | None = None,
+    automatron_deploy_run_id: str | None = None,
+) -> None:
+    """Update deployment_v2-specific columns. Never accepts secret values."""
+    kwargs: dict[str, Any] = {}
+    if deployment_strategy is not None:
+        kwargs["deployment_strategy"] = deployment_strategy
+    if deployment_profile is not None:
+        kwargs["deployment_profile"] = deployment_profile
+    if deployment_secret_names is not None:
+        kwargs["deployment_secret_names"] = list(deployment_secret_names)
+    if deploy_artifacts_fingerprint is not None:
+        kwargs["deploy_artifacts_fingerprint"] = deploy_artifacts_fingerprint
+    if auto_deploy_on_main is not None:
+        kwargs["auto_deploy_on_main"] = bool(auto_deploy_on_main)
+    if artifacts_push_mode is not None:
+        kwargs["artifacts_push_mode"] = artifacts_push_mode
+    if automatron_deploy_run_id is not None:
+        kwargs["automatron_deploy_run_id"] = automatron_deploy_run_id
+    if kwargs:
+        await update_project(project_id, **kwargs)
 
 
 async def update_project_cicd(

@@ -11,6 +11,9 @@ from orchestrator.llm.configuration import default_llm_config, normalize_llm_con
 from orchestrator.repository.manager import RepositoryManager
 
 PreflightPhase = Literal["start", "deploy"]
+DeploymentPreflightPhase = Literal[
+    "generate_artifacts", "setup", "deploy", "health_verify"
+]
 PreflightStatus = Literal["ok", "warning", "blocking"]
 
 
@@ -55,6 +58,53 @@ class PreflightService:
             checks = await self._start_checks(project)
         blocking = any(check.status == "blocking" for check in checks)
         return PreflightResult(phase=phase, ok=not blocking, blocking=blocking, checks=checks)
+
+    async def run_v2(
+        self,
+        project: dict[str, Any],
+        phase: DeploymentPreflightPhase,
+    ) -> PreflightResult:
+        """Run strategy-aware preflight for the deployment_v2 lifecycle."""
+        from orchestrator.deployment_v2 import get_strategy
+        from orchestrator.deployment_v2.profile import DeploymentProfile
+
+        strategy_name = (project.get("deployment_strategy") or "").strip()
+        checks: list[PreflightCheck] = []
+        checks.extend(self._github_configuration_checks())
+
+        if not strategy_name:
+            checks.append(
+                _blocking(
+                    "deployment_strategy_not_set",
+                    "Project has no deployment strategy configured",
+                )
+            )
+        else:
+            try:
+                strategy = get_strategy(strategy_name)
+            except KeyError:
+                checks.append(
+                    _blocking(
+                        "deployment_strategy_unknown",
+                        f"Unknown deployment strategy: {strategy_name!r}",
+                        details={"strategy": strategy_name},
+                    )
+                )
+            else:
+                profile_data = project.get("deployment_profile") or {}
+                if profile_data:
+                    profile = DeploymentProfile.from_dict(profile_data)
+                else:
+                    profile = strategy.detect_requirements(project)
+                checks.extend(await strategy.preflight(profile, phase, project=project))
+
+        blocking = any(check.status == "blocking" for check in checks)
+        return PreflightResult(
+            phase="deploy",  # report under the existing Literal for compatibility
+            ok=not blocking,
+            blocking=blocking,
+            checks=checks,
+        )
 
     def normalize_deploy_target(self, deploy_target: dict[str, Any] | None) -> dict[str, Any]:
         target = dict(deploy_target or {})

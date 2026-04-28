@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from orchestrator.config import settings
 
 logger = logging.getLogger(__name__)
 
+# DEPRECATED: legacy SSH path; new projects use deployment_v2.kamal. Retained
+# until existing projects are migrated and the legacy code is removed in a
+# follow-up PR.
 CI_SECRET_NAMES = {
     "host": "AUTOMATRON_DEPLOY_HOST",
     "port": "AUTOMATRON_DEPLOY_PORT",
@@ -80,9 +84,28 @@ class GitHubActionsManager:
     ) -> list[str]:
         environment = environment_name or settings.github_environment_name
         secrets = self.build_environment_secrets(deploy_target)
-        public_key = await self._get_environment_public_key(repo_name, environment)
+        return await self.upsert_secret_pairs(
+            repo_name, secrets, environment_name=environment
+        )
 
-        for secret_name, secret_value in secrets.items():
+    async def upsert_secret_pairs(
+        self,
+        repo_name: str,
+        secrets: dict[str, str],
+        *,
+        environment_name: str | None = None,
+    ) -> list[str]:
+        """Encrypt and upsert a pre-built `name -> value` dict.
+
+        Used by deployment_v2 paths where the strategy owns the secret schema
+        and produces the dict directly. Skips empty values.
+        """
+        environment = environment_name or settings.github_environment_name
+        non_empty = {name: value for name, value in secrets.items() if value}
+        if not non_empty:
+            return []
+        public_key = await self._get_environment_public_key(repo_name, environment)
+        for secret_name, secret_value in non_empty.items():
             encrypted_value = self._encrypt_secret(public_key["key"], secret_value)
             await self._put(
                 f"{self._repo_path(repo_name)}/environments/{quote(environment, safe='')}/secrets/{secret_name}",
@@ -91,7 +114,7 @@ class GitHubActionsManager:
                     "key_id": public_key["key_id"],
                 },
             )
-        return sorted(secrets)
+        return sorted(non_empty)
 
     def build_environment_secrets(self, deploy_target: dict[str, Any]) -> dict[str, str]:
         required = ("host", "user", "deploy_path")
@@ -446,6 +469,105 @@ jobs:
           fi
           curl --fail --retry 5 --retry-delay 5 "$URL"
 """
+
+    # ── deployment_v2 workflow dispatch / run correlation ─────────────────────
+
+    async def dispatch_workflow(
+        self,
+        repo_name: str,
+        workflow_filename: str,
+        *,
+        ref: str = "main",
+        inputs: dict[str, str] | None = None,
+    ) -> None:
+        """POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches.
+
+        GitHub does not return the run id from this endpoint — callers must
+        correlate via `_match_run_by_correlation` using the
+        `automatron_run_id` input that the workflow echoes in `run-name`.
+        """
+        body: dict[str, Any] = {"ref": ref}
+        if inputs:
+            body["inputs"] = inputs
+        await self._post(
+            f"{self._repo_path(repo_name)}/actions/workflows/"
+            f"{quote(workflow_filename, safe='')}/dispatches",
+            json=body,
+        )
+
+    async def match_run_by_correlation(
+        self,
+        repo_name: str,
+        workflow_filename: str,
+        automatron_run_id: str,
+        *,
+        max_retries: int = 10,
+        delay_s: float = 2.0,
+    ) -> WorkflowRunSummary:
+        """Poll workflow runs until one whose `run-name` matches the id appears."""
+        if not automatron_run_id:
+            raise ValueError("automatron_run_id is required for correlation")
+
+        path = (
+            f"{self._repo_path(repo_name)}/actions/workflows/"
+            f"{quote(workflow_filename, safe='')}/runs"
+        )
+        for attempt in range(max_retries):
+            response = await self._get(
+                path, params={"event": "workflow_dispatch", "per_page": 20}
+            )
+            for run in response.get("workflow_runs", []):
+                run_name = str(run.get("name") or run.get("display_title") or "")
+                if automatron_run_id in run_name:
+                    return self._summarize_run(run, deploy=True)
+            if attempt + 1 < max_retries:
+                await asyncio.sleep(delay_s)
+        return WorkflowRunSummary(
+            status="not_configured",
+            run_id=None,
+            run_url=None,
+            head_sha=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+    async def get_workflow_run(
+        self,
+        repo_name: str,
+        run_id: str,
+    ) -> WorkflowRunSummary:
+        """GET /repos/{owner}/{repo}/actions/runs/{run_id}."""
+        if not run_id:
+            raise ValueError("run_id is required")
+        run = await self._get(f"{self._repo_path(repo_name)}/actions/runs/{run_id}")
+        return self._summarize_run(run, deploy=True)
+
+    async def download_workflow_logs(self, repo_name: str, run_id: str) -> bytes:
+        """GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs (zip)."""
+        if not run_id:
+            raise ValueError("run_id is required")
+        async with httpx.AsyncClient(
+            base_url=settings.github_api_url,
+            headers=self._headers(),
+            timeout=60,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                f"{self._repo_path(repo_name)}/actions/runs/{run_id}/logs"
+            )
+            response.raise_for_status()
+            return response.content
+
+    async def _post(self, path: str, *, json: dict[str, Any] | None = None) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            base_url=settings.github_api_url,
+            headers=self._headers(),
+            timeout=30,
+        ) as client:
+            response = await client.post(path, json=json)
+            if response.status_code not in {200, 201, 204}:
+                response.raise_for_status()
+            return response.json() if response.content else {}
 
     async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         async with httpx.AsyncClient(

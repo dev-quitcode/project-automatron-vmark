@@ -1,0 +1,91 @@
+name: Deploy
+run-name: {% raw %}Automatron ${{ inputs.action }} / ${{ inputs.automatron_run_id }}{% endraw %}
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options:
+          - setup
+          - deploy
+          - rollback
+        required: true
+        default: deploy
+      rollback_to:
+        type: string
+        required: false
+      automatron_run_id:
+        type: string
+        required: true
+{% if auto_deploy_on_main %}
+  push:
+    branches: [main]
+{% endif %}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: {{ environment_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Install Kamal
+        run: gem install kamal -v {{ kamal_version }}
+
+      - name: Write Kamal secrets
+        env:
+          KAMAL_REGISTRY_PASSWORD: {% raw %}${{ secrets.KAMAL_REGISTRY_PASSWORD }}{% endraw %}
+{%- for s in secret_env_names %}
+          {{ s }}: {% raw %}${{ secrets.{% endraw %}{{ s }}{% raw %} }}{% endraw %}
+{%- endfor %}
+        run: |
+          mkdir -p .kamal
+          : > .kamal/secrets
+          printf 'KAMAL_REGISTRY_PASSWORD=%s\n' "$KAMAL_REGISTRY_PASSWORD" >> .kamal/secrets
+{%- for s in secret_env_names %}
+          printf '{{ s }}=%s\n' "${{ '{' }}{{ s }}{{ '}' }}" >> .kamal/secrets
+{%- endfor %}
+
+      - name: SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: {% raw %}${{ secrets.KAMAL_SSH_PRIVATE_KEY }}{% endraw %}
+
+      - name: Run Kamal action
+        env:
+          ACTION: {% raw %}${{ inputs.action || 'deploy' }}{% endraw %}
+          ROLLBACK_TO: {% raw %}${{ inputs.rollback_to }}{% endraw %}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            setup)
+              kamal setup
+              ;;
+            deploy)
+              kamal deploy
+              ;;
+            rollback)
+              if [ -z "$ROLLBACK_TO" ]; then
+                echo "rollback_to input is required for rollback action" >&2
+                exit 1
+              fi
+              kamal rollback "$ROLLBACK_TO"
+              ;;
+            *)
+              echo "Unknown action: $ACTION" >&2
+              exit 1
+              ;;
+          esac

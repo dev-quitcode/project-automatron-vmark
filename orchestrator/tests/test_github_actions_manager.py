@@ -92,6 +92,81 @@ def test_encrypt_secret_returns_base64_ciphertext():
     assert isinstance(base64.b64decode(encrypted), bytes)
 
 
+def test_match_run_by_correlation_finds_run_via_run_name(monkeypatch):
+    import asyncio
+
+    manager = GitHubActionsManager()
+
+    responses = [
+        {"workflow_runs": []},
+        {
+            "workflow_runs": [
+                {
+                    "id": 99,
+                    "name": "Automatron deploy / abc-123",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "html_url": "https://github.test/run/99",
+                    "head_sha": "deadbeef",
+                    "created_at": "2026-04-27T12:00:00Z",
+                    "updated_at": "2026-04-27T12:00:01Z",
+                }
+            ]
+        },
+    ]
+
+    async def fake_get(path: str, *, params=None):
+        return responses.pop(0) if responses else {"workflow_runs": []}
+
+    async def fake_sleep(_):
+        return None
+
+    monkeypatch.setattr(manager, "_get", fake_get)
+    monkeypatch.setattr("orchestrator.github_actions.manager.asyncio.sleep", fake_sleep)
+
+    summary = asyncio.run(
+        manager.match_run_by_correlation(
+            "repo",
+            ".github/workflows/deploy.yml",
+            "abc-123",
+            max_retries=3,
+            delay_s=0.0,
+        )
+    )
+    assert summary.run_id == "99"
+    assert summary.status == "running"
+    assert summary.run_url == "https://github.test/run/99"
+
+
+def test_dispatch_workflow_posts_inputs(monkeypatch):
+    import asyncio
+
+    manager = GitHubActionsManager()
+    captured: dict[str, object] = {}
+
+    async def fake_post(path: str, *, json=None):
+        captured["path"] = path
+        captured["json"] = json
+        return {}
+
+    monkeypatch.setattr(manager, "_post", fake_post)
+
+    asyncio.run(
+        manager.dispatch_workflow(
+            "repo",
+            ".github/workflows/deploy.yml",
+            ref="main",
+            inputs={"action": "deploy", "automatron_run_id": "abc-123"},
+        )
+    )
+
+    assert "/actions/workflows/" in captured["path"]
+    assert captured["json"] == {
+        "ref": "main",
+        "inputs": {"action": "deploy", "automatron_run_id": "abc-123"},
+    }
+
+
 def test_sync_repository_prefers_feature_ci_and_main_deploy(monkeypatch):
     manager = GitHubActionsManager()
 

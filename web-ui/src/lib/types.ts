@@ -19,11 +19,27 @@ export type ProjectStage =
   | "scaffolding"
   | "building"
   | "awaiting_preview_approval"
+  | "deployment_planning"
+  | "deploy_target_configured"
+  | "deployment_artifacts_generated"
+  | "deployment_preflight_passed"
+  | "deployment_preflight_failed"
   | "ready_for_deploy"
   | "deploying"
   | "deployed"
+  | "deploy_failed"
+  | "rolling_back"
+  | "rolled_back"
   | "frozen"
   | "error";
+
+export type DeploymentStrategy = "kamal" | "";
+export type ArtifactsPushMode = "pr" | "direct";
+export type DeploymentPreflightPhase =
+  | "generate_artifacts"
+  | "setup"
+  | "deploy"
+  | "health_verify";
 
 export interface StackConfig {
   [key: string]: unknown;
@@ -44,14 +60,38 @@ export interface ProjectLlmConfig {
 }
 
 export interface DeployTargetSummary {
-  auth_mode: DeployAuthMode | null;
-  host: string | null;
-  port: number | null;
-  user: string | null;
-  deploy_path: string | null;
-  auth_reference: string | null;
-  app_url: string | null;
-  health_path: string | null;
+  strategy: DeploymentStrategy | "legacy";
+  // Kamal-shaped fields (present when strategy === "kamal")
+  host?: string | null;
+  ssh_user?: string | null;
+  ssh_port?: number | null;
+  domain?: string | null;
+  container_port?: number | null;
+  health_path?: string | null;
+  registry?: string | null;
+  registry_username?: string | null;
+  image?: string | null;
+  clear_env_keys?: string[];
+  secret_names?: string[];
+  auto_deploy_on_main?: boolean;
+  artifacts_push_mode?: ArtifactsPushMode;
+  fingerprint?: ArtifactFingerprint | null;
+  // Legacy SSH fields (present when strategy === "legacy")
+  auth_mode?: "legacy_unsupported" | DeployAuthMode | null;
+  port?: number | null;
+  user?: string | null;
+  deploy_path?: string | null;
+  app_url?: string | null;
+}
+
+export interface ArtifactFingerprint {
+  commit_sha: string;
+  branch: string;
+  pr_url: string | null;
+  template_version: string;
+  strategy_version: string;
+  profile_hash: string;
+  rendered_files: string[];
 }
 
 export interface Project {
@@ -88,6 +128,14 @@ export interface Project {
   github_environment_name: string | null;
   last_workflow_sync_at: string | null;
   deploy_target_summary: DeployTargetSummary | null;
+  deployment_strategy?: string;
+  deployment_profile?: Record<string, unknown>;
+  deployment_secret_names?: string[];
+  deploy_artifacts_fingerprint?: ArtifactFingerprint | Record<string, never>;
+  auto_deploy_on_main?: boolean;
+  artifacts_push_mode?: ArtifactsPushMode;
+  automatron_deploy_run_id?: string | null;
+  last_deploy_run_id?: string | null;
   plan_approved: boolean;
   preview_approved: boolean;
   created_at: string;
@@ -228,19 +276,52 @@ export interface ProviderModelCatalog {
   cached: boolean;
 }
 
-export interface DeployTargetRequest {
-  auth_mode: DeployAuthMode;
+export interface DeployTargetConfig {
+  strategy: "kamal";
   host: string;
-  port?: number;
-  user: string;
-  deploy_path: string;
-  auth_reference?: string;
-  ssh_private_key?: string;
-  ssh_password?: string;
-  known_hosts?: string;
-  env_content?: string;
-  app_url?: string;
+  ssh_user: string;
+  ssh_port?: number;
+  domain: string;
+  container_port?: number;
   health_path?: string;
+  registry?: "ghcr.io";
+  registry_username: string;
+  image?: string | null;
+  clear_env?: Record<string, string>;
+  secret_env_names?: string[];
+  auto_deploy_on_main?: boolean;
+  artifacts_push_mode?: ArtifactsPushMode;
+}
+
+export interface DeployTargetSecretsForm {
+  /** SSH private key — never persisted. Sent once to upsert into GitHub Env Secrets. */
+  ssh_private_key: string;
+  /** Container registry password (e.g. GHCR PAT). Never persisted. */
+  registry_password: string;
+  /** Per-app secret values keyed by env name. Never persisted. */
+  secret_env_values?: Record<string, string>;
+}
+
+export interface DeployTargetRequest {
+  config: DeployTargetConfig;
+  secrets: DeployTargetSecretsForm;
+}
+
+export interface DeployRequestBody {}
+
+export interface RollbackRequestBody {
+  rollback_to?: string | null;
+}
+
+export interface DeployPreflightRequestBody {
+  phase: DeploymentPreflightPhase;
+}
+
+export interface DeployStatus {
+  stage: ProjectStage | string;
+  status: string;
+  url: string | null;
+  github_run_id: string | null;
 }
 
 export interface PreflightCheck {
@@ -255,4 +336,10 @@ export interface PreflightResult {
   ok: boolean;
   blocking: boolean;
   checks: PreflightCheck[];
+}
+
+export interface DeployArtifactsResponse {
+  status: "generated";
+  project_id: string;
+  fingerprint: ArtifactFingerprint;
 }
