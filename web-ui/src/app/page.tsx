@@ -73,7 +73,10 @@ export default function DashboardPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {projects.filter((p) => p.status !== "deleted").map((project) => (
+          {projects
+            .filter((p) => p.status !== "deleted")
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+            .map((project) => (
             <ProjectCard
               key={project.id}
               project={project}

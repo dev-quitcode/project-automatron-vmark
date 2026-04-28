@@ -132,6 +132,17 @@ export function useWebSocket(projectId?: string) {
 
     socket.on("issues:updated", (data: { project_id: string; issues: GithubIssue[] }) => {
       if (projectId && data.project_id !== projectId) return;
+      // Play notification when a new PR_open appears (Copilot opened a PR)
+      const prev = useProjectStore.getState().issues;
+      const prevPrOpen = new Set(prev.filter((i) => i.status === "pr_open").map((i) => i.issue_number));
+      const newPrOpen = data.issues.filter((i) => i.status === "pr_open" && !prevPrOpen.has(i.issue_number));
+      if (newPrOpen.length > 0) {
+        try {
+          const audio = new Audio("/notification.mp3");
+          audio.volume = 1.0;
+          audio.play().catch(() => {});
+        } catch {}
+      }
       setIssues(data.issues);
     });
 
