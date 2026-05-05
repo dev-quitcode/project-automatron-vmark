@@ -5,6 +5,7 @@ import type { GithubIssue, IssueStatus } from "@/lib/types";
 import {
   ExternalLink, GitPullRequest, CheckCircle2, Circle,
   GitMerge, Loader2, ChevronDown, ChevronUp, XCircle,
+  Zap, Eye, ThumbsUp,
 } from "lucide-react";
 
 interface IssueCardProps {
@@ -15,37 +16,36 @@ interface IssueCardProps {
   isAssigning: boolean;
 }
 
-const STATUS_CONFIG: Record<IssueStatus, { label: string; dot: string; textColor: string; icon: React.ReactNode }> = {
-  open: {
-    label: "Open",
-    dot: "bg-muted-foreground/40",
-    textColor: "text-muted-foreground",
-    icon: <Circle className="h-3 w-3" />,
-  },
-  pr_open: {
-    label: "PR open",
-    dot: "bg-blue-400",
-    textColor: "text-blue-400",
-    icon: <GitPullRequest className="h-3 w-3" />,
-  },
-  pr_reviewed: {
-    label: "Reviewed",
-    dot: "bg-amber-400",
-    textColor: "text-amber-400",
-    icon: <GitPullRequest className="h-3 w-3" />,
-  },
-  merged: {
-    label: "Merged",
-    dot: "bg-purple-400",
-    textColor: "text-purple-400",
-    icon: <GitMerge className="h-3 w-3" />,
-  },
-  closed: {
-    label: "Closed",
-    dot: "bg-green-400",
-    textColor: "text-green-400",
-    icon: <CheckCircle2 className="h-3 w-3" />,
-  },
+type VisualState =
+  | "open"
+  | "pr_open"
+  | "pr_reviewed_pass"
+  | "pr_reviewed_fail"
+  | "merged"
+  | "closed";
+
+function toVisualState(issue: GithubIssue): VisualState {
+  if (issue.status === "merged") return "merged";
+  if (issue.status === "closed") return "closed";
+  if (issue.status === "pr_reviewed") {
+    return issue.pr_review?.passed ? "pr_reviewed_pass" : "pr_reviewed_fail";
+  }
+  if (issue.status === "pr_open") return "pr_open";
+  return "open";
+}
+
+const STATE_META: Record<VisualState, {
+  dot: string;
+  label: string;
+  labelColor: string;
+  rowBg?: string;
+}> = {
+  open:               { dot: "bg-muted-foreground/30", label: "Open",           labelColor: "text-muted-foreground" },
+  pr_open:            { dot: "bg-blue-400",             label: "PR Ready",       labelColor: "text-blue-400",    rowBg: "bg-blue-500/5" },
+  pr_reviewed_pass:   { dot: "bg-green-400",            label: "Review Passed",  labelColor: "text-green-400",   rowBg: "bg-green-500/5" },
+  pr_reviewed_fail:   { dot: "bg-amber-400",            label: "Changes Needed", labelColor: "text-amber-400",   rowBg: "bg-amber-500/5" },
+  merged:             { dot: "bg-purple-400",           label: "Merged",         labelColor: "text-purple-400" },
+  closed:             { dot: "bg-muted-foreground/30",  label: "Closed",         labelColor: "text-muted-foreground" },
 };
 
 function timeAgo(iso: string): string {
@@ -58,30 +58,26 @@ function timeAgo(iso: string): string {
 
 export function IssueCard({ issue, onReview, onAssignCopilot, isReviewing, isAssigning }: IssueCardProps) {
   const [reviewExpanded, setReviewExpanded] = useState(false);
-  const cfg = STATUS_CONFIG[issue.status] ?? STATUS_CONFIG.open;
-  const isDone = issue.status === "merged" || issue.status === "closed";
+  const vs = toVisualState(issue);
+  const meta = STATE_META[vs];
+  const isDone = vs === "merged" || vs === "closed";
   const review = issue.pr_review?.summary ? issue.pr_review : null;
 
-  // Derive direct GitHub issue URL from copilot_workspace_url
-  const issueUrl = issue.copilot_workspace_url ?? null;
-
   return (
-    <div className={`px-4 py-3 transition-colors hover:bg-muted/20 ${isDone ? "opacity-55" : ""}`}>
+    <div className={`px-4 py-3 transition-colors ${meta.rowBg ?? ""} ${isDone ? "opacity-50" : ""}`}>
       <div className="flex items-start gap-3">
 
-        {/* Status dot + issue number */}
-        <div className="flex shrink-0 flex-col items-center gap-1 pt-0.5">
-          <div className={`h-2 w-2 rounded-full ${cfg.dot}`} />
+        {/* Status dot */}
+        <div className="mt-1.5 shrink-0">
+          <div className={`h-2 w-2 rounded-full ${meta.dot}`} />
         </div>
 
-        {/* Main content */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          {/* Title row */}
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                  #{issue.issue_number}
-                </span>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="shrink-0 font-mono text-xs text-muted-foreground">#{issue.issue_number}</span>
                 <span className={`text-sm leading-snug ${isDone ? "line-through text-muted-foreground" : "font-medium"}`}>
                   {issue.title}
                 </span>
@@ -90,98 +86,92 @@ export function IssueCard({ issue, onReview, onAssignCopilot, isReviewing, isAss
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{issue.story}</p>
               )}
             </div>
-
-            {/* Status badge */}
-            <span className={`inline-flex shrink-0 items-center gap-1 text-xs font-medium ${cfg.textColor}`}>
-              {cfg.icon}
-              {cfg.label}
+            {/* Status label */}
+            <span className={`shrink-0 text-xs font-semibold ${meta.labelColor}`}>
+              {meta.label}
             </span>
           </div>
 
           {/* Action row */}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
 
-            {/* View issue on GitHub */}
-            {issueUrl && (
-              <a
-                href={issueUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <ExternalLink className="h-3 w-3" />
-                Issue
+            {/* Issue link */}
+            {issue.copilot_workspace_url && (
+              <a href={issue.copilot_workspace_url} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                <ExternalLink className="h-3 w-3" /> Issue #{issue.issue_number}
               </a>
             )}
 
-            {/* Open PR */}
+            {/* PR link */}
             {issue.pr_url && (
-              <a
-                href={issue.pr_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md border border-blue-500/30 bg-blue-500/5 px-2 py-1 text-xs font-medium text-blue-400 transition-colors hover:bg-blue-500/15"
-              >
+              <a href={issue.pr_url} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-blue-500/30 bg-blue-500/5 px-2 py-1 text-xs font-medium text-blue-400 hover:bg-blue-500/15 transition-colors">
                 <GitPullRequest className="h-3 w-3" />
                 PR #{issue.pr_number}
                 <ExternalLink className="h-2.5 w-2.5" />
               </a>
             )}
 
-            {/* AI Review — when PR is open or reviewed */}
-            {(issue.status === "pr_open" || issue.status === "pr_reviewed") && issue.pr_number && (
-              <button
-                onClick={() => onReview(issue.issue_number, issue.pr_number!)}
-                disabled={isReviewing}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-              >
-                {isReviewing
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <GitPullRequest className="h-3 w-3" />}
-                {isReviewing ? "Reviewing…" : "AI Review"}
-              </button>
-            )}
-
-            {/* Assign Copilot — only when open with no PR */}
-            {issue.status === "open" && !issue.pr_url && (
-              <button
-                onClick={() => onAssignCopilot(issue.issue_number)}
-                disabled={isAssigning}
-                className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
-              >
-                {isAssigning
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <GitPullRequest className="h-3 w-3" />}
+            {/* Assign Copilot — open, no PR, not yet assigned */}
+            {vs === "open" && (
+              <button onClick={() => onAssignCopilot(issue.issue_number)} disabled={isAssigning}
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50">
+                {isAssigning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
                 {isAssigning ? "Assigning…" : "Assign Copilot"}
               </button>
             )}
 
-            {/* Updated timestamp */}
-            <span className="ml-auto text-xs text-muted-foreground/50">
-              {timeAgo(issue.updated_at)}
-            </span>
+            {/* Request AI Review — when PR is open */}
+            {vs === "pr_open" && issue.pr_number && (
+              <button onClick={() => onReview(issue.issue_number, issue.pr_number!)} disabled={isReviewing}
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-600 transition-colors disabled:opacity-50 shadow-sm">
+                {isReviewing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
+                {isReviewing ? "Reviewing…" : "Request AI Review"}
+              </button>
+            )}
+
+            {/* Re-review after suggestions */}
+            {vs === "pr_reviewed_fail" && issue.pr_number && (
+              <button onClick={() => onReview(issue.issue_number, issue.pr_number!)} disabled={isReviewing}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-xs font-medium text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50">
+                {isReviewing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
+                Re-review
+              </button>
+            )}
+
+            {/* Approve PR — shown when review passed or when there are suggestions */}
+            {(vs === "pr_reviewed_pass" || vs === "pr_reviewed_fail") && issue.pr_url && (
+              <a href={issue.pr_url} target="_blank" rel="noopener noreferrer"
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors shadow-sm
+                  ${vs === "pr_reviewed_pass"
+                    ? "bg-green-500 text-white hover:bg-green-600"
+                    : "border border-amber-500/40 bg-amber-500/5 text-amber-400 hover:bg-amber-500/10"}`}>
+                <ThumbsUp className="h-3 w-3" />
+                {vs === "pr_reviewed_pass" ? "Approve & Merge" : "Approve Anyway"}
+                <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            )}
+
+            {/* Timestamp */}
+            <span className="ml-auto text-xs text-muted-foreground/40">{timeAgo(issue.updated_at)}</span>
           </div>
         </div>
       </div>
 
-      {/* PR review result */}
+      {/* Review result */}
       {review && (
-        <div className="ml-5 mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
-          <button
-            onClick={() => setReviewExpanded((v) => !v)}
-            className="flex w-full items-center justify-between gap-2 text-xs"
-          >
+        <div className="ml-5 mt-2 rounded-lg border border-border bg-card px-3 py-2">
+          <button onClick={() => setReviewExpanded((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 text-xs">
             <span className={`flex items-center gap-1.5 font-medium ${review.passed ? "text-green-400" : "text-amber-400"}`}>
               {review.passed
                 ? <CheckCircle2 className="h-3.5 w-3.5" />
                 : <XCircle className="h-3.5 w-3.5" />}
-              {review.passed ? "Review passed" : "Issues found"}
+              {review.passed ? "AI review passed" : "AI review — changes needed"}
             </span>
-            {reviewExpanded
-              ? <ChevronUp className="h-3 w-3 text-muted-foreground" />
-              : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
+            {reviewExpanded ? <ChevronUp className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
           </button>
-
           {reviewExpanded && (
             <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground leading-relaxed">
               {review.summary}

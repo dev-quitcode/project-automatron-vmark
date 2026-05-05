@@ -5,14 +5,16 @@ import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor,
 } from "lucide-react";
 
 interface IssuesBoardProps {
   issues: GithubIssue[];
   repoUrl: string | null;
+  previewUrl: string | null;
   onSync: () => void;
   onAudit: () => void;
+  onStartPreview: () => void;
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
   reviewingIssues: Set<number>;
@@ -21,42 +23,23 @@ interface IssuesBoardProps {
   isAuditing: boolean;
 }
 
-// Active statuses sort before idle ones
-const STATUS_ORDER: Record<string, number> = {
-  pr_reviewed: 0,
-  pr_open: 1,
-  open: 2,
-  closed: 3,
-  merged: 4,
-};
-
-function sortIssues(issues: GithubIssue[]): GithubIssue[] {
-  return [...issues].sort((a, b) => {
-    const so = (STATUS_ORDER[a.status] ?? 2) - (STATUS_ORDER[b.status] ?? 2);
-    if (so !== 0) return so;
-    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-  });
-}
-
 export function IssuesBoard({
-  issues, repoUrl, onSync, onAudit, onReview, onAssignCopilot,
+  issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
   reviewingIssues, assigningIssues, isSyncing, isAuditing,
 }: IssuesBoardProps) {
 
-  // Group by epic, sort issues within each
+  // Group by epic — preserve issue_number order (chronological)
   const epicMap = useMemo(() => {
     const map = new Map<string, GithubIssue[]>();
-    for (const issue of issues) {
+    for (const issue of [...issues].sort((a, b) => a.issue_number - b.issue_number)) {
       const epic = issue.epic ?? "General";
       if (!map.has(epic)) map.set(epic, []);
       map.get(epic)!.push(issue);
     }
-    // Sort each epic's issues: active first, then by updated_at
-    map.forEach((v, k) => map.set(k, sortIssues(v)));
     return map;
   }, [issues]);
 
-  // Auto-collapse epics that are fully done
+  // Auto-collapse fully-done epics on first render
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(() => {
     const done = new Set<string>();
     for (const [epic, list] of epicMap) {
@@ -101,34 +84,21 @@ export function IssuesBoard({
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground">
-          {totalDone}/{issues.length} done
-        </p>
+        <p className="text-sm text-muted-foreground">{totalDone}/{issues.length} done</p>
         <div className="flex items-center gap-2">
           {repoIssuesUrl && (
-            <a
-              href={repoIssuesUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              <ExternalLink className="h-3 w-3" />
-              GitHub Issues
+            <a href={repoIssuesUrl} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90">
+              <ExternalLink className="h-3 w-3" /> GitHub Issues
             </a>
           )}
-          <button
-            onClick={onAudit}
-            disabled={isAuditing}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
+          <button onClick={onAudit} disabled={isAuditing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">
             <ScanSearch className={`h-3 w-3 ${isAuditing ? "animate-pulse" : ""}`} />
             {isAuditing ? "Auditing..." : "Audit Code"}
           </button>
-          <button
-            onClick={onSync}
-            disabled={isSyncing}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
+          <button onClick={onSync} disabled={isSyncing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">
             <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
             {isSyncing ? "Syncing..." : "Sync"}
           </button>
@@ -137,10 +107,30 @@ export function IssuesBoard({
 
       {/* Progress bar */}
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-primary transition-all"
-          style={{ width: `${issues.length > 0 ? (totalDone / issues.length) * 100 : 0}%` }}
-        />
+        <div className="h-full rounded-full bg-primary transition-all"
+          style={{ width: `${issues.length > 0 ? (totalDone / issues.length) * 100 : 0}%` }} />
+      </div>
+
+      {/* Preview bar — always available */}
+      <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Monitor className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Preview</span>
+          {previewUrl && (
+            <span className="text-xs text-muted-foreground truncate max-w-[200px]">{previewUrl}</span>
+          )}
+        </div>
+        {previewUrl ? (
+          <a href={previewUrl} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            <ExternalLink className="h-3 w-3" /> Open Preview
+          </a>
+        ) : (
+          <button onClick={onStartPreview}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+            <Monitor className="h-3 w-3" /> Launch Preview
+          </button>
+        )}
       </div>
 
       {/* Status summary pills */}
@@ -152,7 +142,7 @@ export function IssuesBoard({
         )}
         {counts.pr_open > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-1 text-blue-400">
-            <GitPullRequest className="h-3 w-3" /> {counts.pr_open} PR open
+            <GitPullRequest className="h-3 w-3" /> {counts.pr_open} PR ready
           </span>
         )}
         {counts.pr_reviewed > 0 && (
@@ -174,18 +164,15 @@ export function IssuesBoard({
 
       {/* Epics */}
       {Array.from(epicMap.entries()).map(([epic, epicIssues]) => {
-        const epicDone = epicIssues.filter(
-          (i) => i.status === "merged" || i.status === "closed"
-        ).length;
+        const epicDone = epicIssues.filter((i) => i.status === "merged" || i.status === "closed").length;
         const isCollapsed = collapsedEpics.has(epic);
         const epicComplete = epicDone === epicIssues.length;
 
         return (
           <div key={epic} className="overflow-hidden rounded-xl border border-border">
-            <button
-              onClick={() => toggleEpic(epic)}
-              className="flex w-full items-center justify-between gap-3 bg-muted/40 px-4 py-3 text-left hover:bg-muted/60"
-            >
+            {/* Epic header */}
+            <button onClick={() => toggleEpic(epic)}
+              className="flex w-full items-center justify-between gap-3 bg-muted/40 px-4 py-3 text-left hover:bg-muted/60">
               <div className="flex items-center gap-2 min-w-0">
                 {isCollapsed
                   ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -198,26 +185,28 @@ export function IssuesBoard({
                 </span>
               </div>
               <div className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-border">
-                <div
-                  className={`h-full rounded-full transition-all ${epicComplete ? "bg-green-500" : "bg-primary"}`}
-                  style={{ width: `${epicIssues.length > 0 ? (epicDone / epicIssues.length) * 100 : 0}%` }}
-                />
+                <div className={`h-full rounded-full transition-all ${epicComplete ? "bg-green-500" : "bg-primary"}`}
+                  style={{ width: `${epicIssues.length > 0 ? (epicDone / epicIssues.length) * 100 : 0}%` }} />
               </div>
             </button>
 
+            {/* Issues */}
             {!isCollapsed && (
-              <div className="divide-y divide-border/40">
-                {epicIssues.map((issue) => (
-                  <IssueCard
-                    key={issue.id}
-                    issue={issue}
-                    onReview={onReview}
-                    onAssignCopilot={onAssignCopilot}
-                    isReviewing={reviewingIssues.has(issue.issue_number)}
-                    isAssigning={assigningIssues.has(issue.issue_number)}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="divide-y divide-border/40">
+                  {epicIssues.map((issue) => (
+                    <IssueCard
+                      key={issue.id}
+                      issue={issue}
+                      onReview={onReview}
+                      onAssignCopilot={onAssignCopilot}
+                      isReviewing={reviewingIssues.has(issue.issue_number)}
+                      isAssigning={assigningIssues.has(issue.issue_number)}
+                    />
+                  ))}
+                </div>
+
+              </>
             )}
           </div>
         );

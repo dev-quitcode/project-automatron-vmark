@@ -147,11 +147,12 @@ function ActivityEntry({ log }: { log: BuilderLog }) {
 export function LogStream({ logs, className, maxHeight = "400px" }: LogStreamProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Newest at top — scroll to top when new logs arrive
   useEffect(() => {
     if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      containerRef.current.scrollTop = 0;
     }
-  }, [logs]);
+  }, [logs.length]);
 
   if (logs.length === 0) {
     return (
@@ -189,13 +190,13 @@ export function LogStream({ logs, className, maxHeight = "400px" }: LogStreamPro
         </div>
       </div>
 
-      {/* Feed */}
+      {/* Feed — newest first */}
       <div
         ref={containerRef}
         className="overflow-auto px-4 py-4"
         style={{ maxHeight }}
       >
-        {logs.map((log, i) => (
+        {[...logs].reverse().map((log, i) => (
           <ActivityEntry key={`${log.task_index}-${i}`} log={log} />
         ))}
       </div>
