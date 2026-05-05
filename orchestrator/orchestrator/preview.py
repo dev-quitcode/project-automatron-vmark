@@ -176,7 +176,15 @@ async def run_preview_locally(project_id: str, owner: str, repo: str) -> str | N
         logger.error("Preview: docker run failed:\n%s", out)
         return None
 
-    preview_url = f"http://localhost:{port}"
+    # Use public hostname when deployed, localhost when running locally
+    from orchestrator.config import settings
+    from urllib.parse import urlparse
+    public = (settings.automatron_public_url or "").rstrip("/")
+    if public:
+        host = urlparse(public).hostname or "localhost"
+    else:
+        host = "localhost"
+    preview_url = f"http://{host}:{port}"
     logger.info("Preview: container started, polling %s", preview_url)
 
     # Wait up to 60s for the app to be reachable

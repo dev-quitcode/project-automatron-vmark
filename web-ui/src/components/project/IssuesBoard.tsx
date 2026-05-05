@@ -5,7 +5,7 @@ import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2,
 } from "lucide-react";
 
 interface IssuesBoardProps {
@@ -14,7 +14,7 @@ interface IssuesBoardProps {
   previewUrl: string | null;
   onSync: () => void;
   onAudit: () => void;
-  onStartPreview: () => void;
+  onStartPreview: () => Promise<void> | void;
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
   reviewingIssues: Set<number>;
@@ -27,6 +27,18 @@ export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
   reviewingIssues, assigningIssues, isSyncing, isAuditing,
 }: IssuesBoardProps) {
+
+  const [isStartingPreview, setIsStartingPreview] = useState(false);
+
+  const handleStartPreview = async () => {
+    setIsStartingPreview(true);
+    try {
+      await onStartPreview();
+    } finally {
+      // Keep spinner until previewUrl arrives via WebSocket (max 3 min)
+      setTimeout(() => setIsStartingPreview(false), 180_000);
+    }
+  };
 
   // Group by epic — preserve issue_number order (chronological)
   const epicMap = useMemo(() => {
@@ -125,8 +137,12 @@ export function IssuesBoard({
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
             <ExternalLink className="h-3 w-3" /> Open Preview
           </a>
+        ) : isStartingPreview ? (
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground opacity-60">
+            <Loader2 className="h-3 w-3 animate-spin" /> Building…
+          </span>
         ) : (
-          <button onClick={onStartPreview}
+          <button onClick={handleStartPreview}
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
             <Monitor className="h-3 w-3" /> Launch Preview
           </button>

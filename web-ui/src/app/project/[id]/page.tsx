@@ -844,7 +844,7 @@ export default function ProjectPage() {
               previewUrl={currentProject.preview_url ?? null}
               onSync={() => void handleSyncIssues()}
               onAudit={() => void handleAudit()}
-              onStartPreview={() => void restartPreview(projectId)}
+              onStartPreview={() => restartPreview(projectId)}
               onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
               onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
               reviewingIssues={reviewingIssues}

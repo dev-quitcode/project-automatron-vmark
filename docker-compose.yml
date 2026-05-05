@@ -23,6 +23,8 @@ services:
       - WORKSPACE_BASE_PATH=/var/automatron/workspaces
       - GOLDEN_IMAGE=automatron/golden:latest
       - DEBUG=true
+    ports:
+      - "7000-7999:7000-7999"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
