@@ -30,6 +30,7 @@ from orchestrator.models.project import (
     update_project_deploy_target,
     update_project_llm_config,
     update_project_plan,
+    update_project_preview,
     update_project_stage,
     update_project_status,
 )
@@ -456,6 +457,34 @@ async def api_get_project_deploy_runs(project_id: str) -> list[dict[str, Any]]:
 async def api_get_project_trace(project_id: str) -> list[dict[str, Any]]:
     await _get_required_project(project_id)
     return await get_trace_events(project_id)
+
+
+@router.post("/projects/{project_id}/preview/restart")
+async def api_restart_preview(project_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
+    project = await _get_required_project(project_id)
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        raise HTTPException(status_code=422, detail="Project has no GitHub repo configured")
+    background_tasks.add_task(_run_preview_and_save, project_id, owner, repo)
+    return {"status": "started", "project_id": project_id}
+
+
+async def _run_preview_and_save(project_id: str, owner: str, repo: str) -> None:
+    from orchestrator.preview import run_preview_locally
+    from orchestrator.api.websocket import emit_status_update
+    preview_url = await run_preview_locally(project_id, owner, repo)
+    if preview_url:
+        await update_project_preview(project_id, preview_url, "ready")
+        project = await get_project(project_id)
+        if project:
+            await emit_status_update(
+                project_id,
+                status=project.get("status", "idle"),
+                stage=project.get("project_stage", "issues"),
+                progress={},
+                preview_url=preview_url,
+            )
 
 
 def _raise_for_preflight_failure(result: PreflightResult) -> None:
