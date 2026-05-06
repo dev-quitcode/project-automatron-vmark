@@ -179,7 +179,54 @@ def _summarise_figma_node(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_issue_body(task: dict[str, Any], epic: str, story: str) -> str:
+async def _build_stack_summary(gh: Any, owner: str, repo: str) -> str:
+    """Read package.json + tailwind config and produce a short stack summary for issue bodies."""
+    import json as _json
+    lines: list[str] = []
+    try:
+        raw = await gh.read_file(owner, repo, "package.json") or ""
+        if raw:
+            pkg = _json.loads(raw)
+            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+            interesting = [
+                "next", "react", "vue", "nuxt", "svelte", "astro",
+                "tailwindcss", "@shadcn/ui", "radix-ui", "@radix-ui/react-dialog",
+                "prisma", "drizzle-orm", "supabase", "@supabase/supabase-js",
+                "zustand", "jotai", "react-query", "@tanstack/react-query",
+                "framer-motion", "lucide-react", "zod", "next-intl",
+            ]
+            found = [k for k in interesting if any(k in d for d in deps)]
+            if found:
+                lines.append(f"- **Libraries:** {', '.join(found)}")
+            if "typescript" in deps or pkg.get("devDependencies", {}).get("typescript"):
+                lines.append("- **Language:** TypeScript")
+    except Exception:
+        pass
+
+    try:
+        tw = (
+            await gh.read_file(owner, repo, "tailwind.config.ts")
+            or await gh.read_file(owner, repo, "tailwind.config.js")
+            or ""
+        )
+        if tw and "colors" in tw:
+            lines.append("- **Tailwind:** custom theme with project color tokens (see tailwind.config)")
+        elif tw:
+            lines.append("- **Styling:** Tailwind CSS")
+    except Exception:
+        pass
+
+    try:
+        comp = await gh.read_file(owner, repo, "components.json") or ""
+        if comp:
+            lines.append("- **UI components:** shadcn/ui (components in `components/ui/`)")
+    except Exception:
+        pass
+
+    return "\n".join(lines) if lines else ""
+
+
+def _render_issue_body(task: dict[str, Any], epic: str, story: str, stack_summary: str = "") -> str:
     lines: list[str] = []
     lines.append(f"**Epic:** {epic}  ")
     lines.append(f"**Story:** {story}")
@@ -215,6 +262,11 @@ def _render_issue_body(task: dict[str, Any], epic: str, story: str) -> str:
     if task.get("validation"):
         lines.append("## Validation")
         lines.append(f"```\n{task['validation']}\n```")
+        lines.append("")
+
+    if stack_summary:
+        lines.append("## Tech stack context")
+        lines.append(stack_summary)
 
     return "\n".join(lines)
 
@@ -313,11 +365,34 @@ class GitHubOrchestrator:
         prd = await self.gh.read_file(owner, repo, "docs/PRD.md") or ""
         extra_context = f"\n\n---\n\n{prd}" if prd else ""
 
+        # Read stack files so the LLM knows exact libraries, components, and patterns
+        pkg_json = await self.gh.read_file(owner, repo, "package.json") or ""
+        tw_config = (
+            await self.gh.read_file(owner, repo, "tailwind.config.ts")
+            or await self.gh.read_file(owner, repo, "tailwind.config.js")
+            or ""
+        )
+        components_json = await self.gh.read_file(owner, repo, "components.json") or ""  # shadcn config
+
+        stack_context = ""
+        if pkg_json:
+            stack_context += f"\n\n## package.json\n```json\n{pkg_json[:3000]}\n```"
+        if tw_config:
+            stack_context += f"\n\n## tailwind.config\n```js\n{tw_config[:2000]}\n```"
+        if components_json:
+            stack_context += f"\n\n## components.json (shadcn/ui config)\n```json\n{components_json[:1000]}\n```"
+
         context_parts = []
         if readme:
             context_parts.append("README.md")
         if prd:
             context_parts.append("docs/PRD.md")
+        if pkg_json:
+            context_parts.append("package.json")
+        if tw_config:
+            context_parts.append("tailwind.config")
+        if components_json:
+            context_parts.append("components.json")
         await self._log(
             "Repository context loaded",
             ", ".join(context_parts) if context_parts else "No README found",
@@ -345,6 +420,8 @@ class GitHubOrchestrator:
             f"Repository: {owner}/{repo}\n\n"
             f"## README\n\n{readme}{extra_context}\n\n"
         )
+        if stack_context:
+            user_msg += f"## Tech Stack Files{stack_context}\n\n"
         if figma_context:
             user_msg += f"## Figma Design Context\n\n{figma_context}\n\n"
         user_msg += "Produce the architecture document, stories document, and issue plan now."
@@ -426,6 +503,9 @@ class GitHubOrchestrator:
         issue_plan_raw = project.get("issue_plan_json") or project.get("execution_contract_json") or "{}"
         issue_plan = json.loads(issue_plan_raw) if isinstance(issue_plan_raw, str) else issue_plan_raw
 
+        # Build stack summary to embed in every issue body
+        stack_summary = await _build_stack_summary(self.gh, owner, repo)
+
         if not issue_plan.get("epics"):
             raise RuntimeError("No issue plan found — re-run planning first")
 
@@ -496,7 +576,7 @@ class GitHubOrchestrator:
 
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    body = _render_issue_body(task, epic_title, story_title)
+                    body = _render_issue_body(task, epic_title, story_title, stack_summary)
                     # GitHub label names are capped at 50 chars
                     label_name = story_title[:50] if story_title else ""
                     labels = [label_name] if label_name else []
@@ -871,7 +951,8 @@ class GitHubOrchestrator:
                 story_title = story.get("title", "")
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    body = _render_issue_body(task, epic_title, story_title)
+                    audit_stack = await _build_stack_summary(self.gh, owner, repo)
+                    body = _render_issue_body(task, epic_title, story_title, audit_stack)
                     try:
                         gh_issue = await self.gh.create_issue(
                             owner, repo,
