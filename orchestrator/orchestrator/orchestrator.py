@@ -1167,18 +1167,21 @@ async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
     await orch._log("Creating issue from prompt", prompt[:120], "RUNNING")
 
     llm_cfg = await orch._llm_config()
-    arch_cfg = llm_cfg.get("architect", {})
+    arch_model = llm_cfg["architect"]["model"]
 
     stack_summary = await _build_stack_summary(orch.gh, owner, repo)
 
-    prompt_tpl = (Path(__file__).parent.parent / "prompts" / "issue_from_prompt_v1.txt").read_text()
+    prompt_tpl = _load_prompt("issue_from_prompt_v1.txt")
     user_msg = prompt_tpl.format(prompt=prompt, stack_context=stack_summary or "(not available)")
 
     raw = await call_llm(
-        system="You are a senior software engineer. Output only valid JSON.",
-        messages=[{"role": "user", "content": user_msg}],
-        llm_config=arch_cfg,
+        [
+            SystemMessage(content="You are a senior software engineer. Output only valid JSON, no markdown fences."),
+            HumanMessage(content=user_msg),
+        ],
+        model=arch_model,
         max_tokens=2000,
+        trace_context={**orch._trace_ctx, "actor": "architect"},
     )
 
     try:
