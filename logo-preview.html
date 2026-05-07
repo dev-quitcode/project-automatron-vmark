@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Automatron Logo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a12;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #e0e0f0;
+      padding: 48px 24px 80px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #4338ca;
+      margin-bottom: 52px;
+    }
+
+    /* ─── Grid of swatches ─── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 32px;
+      max-width: 960px;
+      margin: 0 auto 60px;
+    }
+
+    .swatch {
+      border-radius: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 24px 28px;
+      gap: 20px;
+    }
+
+    .swatch-label {
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      opacity: 0.45;
+    }
+
+    /* Backgrounds */
+    .bg-white  { background: #ffffff; }
+    .bg-black  { background: #000000; }
+    .bg-dark   { background: #07070f; border: 1px solid #1a1a2e; }
+    .bg-navy   { background: #0d0d2b; }
+    .bg-slate  { background: #1e1e2e; }
+
+    .swatch-label.dark { color: #222; }
+
+    /* ─── Sizes row ─── */
+    .sizes {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+      max-width: 960px;
+      margin: 0 auto 24px;
+      background: #000;
+      border-radius: 18px;
+      padding: 40px;
+    }
+
+    .size-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .size-col span {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #3730a3;
+    }
+
+    /* ─── Download bar ─── */
+    .dl-bar {
+      text-align: center;
+      margin-top: 48px;
+    }
+
+    .dl-bar a {
+      display: inline-block;
+      padding: 11px 32px;
+      background: #4338ca;
+      color: #e0e7ff;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      margin: 0 8px;
+    }
+
+    .dl-bar a:hover { background: #3730a3; }
+    .dl-bar a.sec { background: transparent; border: 1px solid #3730a3; color: #818cf8; }
+    .dl-bar a.sec:hover { background: #1e1b4b; }
+  </style>
+</head>
+<body>
+
+<h1>Automatron Insignia</h1>
+
+<!-- Row 1: colour variants -->
+<div class="grid">
+
+  <!-- Pure black on white — print / letterhead -->
+  <div class="swatch bg-white">
+    <img src="automatron-logo.svg" width="180"/>
+    <span class="swatch-label dark">Black · on white</span>
+  </div>
+
+  <!-- White on black — strong contrast -->
+  <div class="swatch bg-black">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 390" width="180">
+      <path fill="#fff" d="M 160,10 L 186,48 L 202,72 L 228,38 L 250,62 L 274,92 L 298,124 L 272,152 L 266,176 L 256,252 L 240,308 L 212,350 L 184,370 L 160,382 L 136,370 L 108,350 L 80,308 L 64,252 L 54,176 L 48,152 L 22,124 L 46,92 L 70,62 L 92,38 L 118,72 L 134,48 Z"/>
+      <polygon fill="#000" points="160,82 197,104 198,120 160,102 122,120 123,104"/>
+      <polygon fill="#000" points="133,126 54,142 58,168 137,156"/>
+      <polygon fill="#000" points="187,126 266,142 262,168 183,156"/>
+      <polygon fill="#000" points="90,188 86,222 120,234 160,230 200,234 234,222 230,188 198,196 160,192 122,196"/>
+      <polygon fill="#000" points="160,330 146,356 174,356"/>
+    </svg>
+    <span class="swatch-label">White · on black</span>
+  </div>
+
+  <!-- Brand indigo — app & digital -->
+  <div class="swatch bg-dark">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 390" width="180">
+      <defs>
+        <linearGradient id="indigoBody" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#4f46e5"/>
+          <stop offset="100%" stop-color="#1e1b4b"/>
+        </linearGradient>
+        <filter id="cyanglow">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <path fill="url(#indigoBody)" d="M 160,10 L 186,48 L 202,72 L 228,38 L 250,62 L 274,92 L 298,124 L 272,152 L 266,176 L 256,252 L 240,308 L 212,350 L 184,370 L 160,382 L 136,370 L 108,350 L 80,308 L 64,252 L 54,176 L 48,152 L 22,124 L 46,92 L 70,62 L 92,38 L 118,72 L 134,48 Z"/>
+      <!-- forehead chevron: soft violet -->
+      <polygon fill="#818cf8" opacity="0.7" points="160,82 197,104 198,120 160,102 122,120 123,104"/>
+      <!-- eyes: cyan glow -->
+      <polygon fill="#22d3ee" filter="url(#cyanglow)" points="133,126 54,142 58,168 137,156"/>
+      <polygon fill="#22d3ee" filter="url(#cyanglow)" points="187,126 266,142 262,168 183,156"/>
+      <!-- chin guard: violet -->
+      <polygon fill="#818cf8" opacity="0.6" points="90,188 86,222 120,234 160,230 200,234 234,222 230,188 198,196 160,192 122,196"/>
+      <!-- delta mark: cyan -->
+      <polygon fill="#22d3ee" opacity="0.8" points="160,330 146,356 174,356"/>
+    </svg>
+    <span class="swatch-label">Indigo · brand colour</span>
+  </div>
+
+  <!-- Crimson variant — alternate colourway -->
+  <div class="swatch bg-slate">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 390" width="180">
+      <defs>
+        <linearGradient id="redBody" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#991b1b"/>
+          <stop offset="100%" stop-color="#3b0000"/>
+        </linearGradient>
+        <filter id="redglow">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <path fill="url(#redBody)" d="M 160,10 L 186,48 L 202,72 L 228,38 L 250,62 L 274,92 L 298,124 L 272,152 L 266,176 L 256,252 L 240,308 L 212,350 L 184,370 L 160,382 L 136,370 L 108,350 L 80,308 L 64,252 L 54,176 L 48,152 L 22,124 L 46,92 L 70,62 L 92,38 L 118,72 L 134,48 Z"/>
+      <polygon fill="#fca5a5" opacity="0.6" points="160,82 197,104 198,120 160,102 122,120 123,104"/>
+      <polygon fill="#f87171" filter="url(#redglow)" points="133,126 54,142 58,168 137,156"/>
+      <polygon fill="#f87171" filter="url(#redglow)" points="187,126 266,142 262,168 183,156"/>
+      <polygon fill="#fca5a5" opacity="0.55" points="90,188 86,222 120,234 160,230 200,234 234,222 230,188 198,196 160,192 122,196"/>
+      <polygon fill="#f87171" opacity="0.85" points="160,330 146,356 174,356"/>
+    </svg>
+    <span class="swatch-label">Crimson · alternate</span>
+  </div>
+
+</div>
+
+<!-- Row 2: sizes on black -->
+<div class="sizes">
+  <div class="size-col">
+    <span>256 px</span>
+    <img src="automatron-logo.svg" width="256" style="filter:invert(1)"/>
+  </div>
+  <div class="size-col">
+    <span>128 px</span>
+    <img src="automatron-logo.svg" width="128" style="filter:invert(1)"/>
+  </div>
+  <div class="size-col">
+    <span>64 px</span>
+    <img src="automatron-logo.svg" width="64" style="filter:invert(1)"/>
+  </div>
+  <div class="size-col">
+    <span>32 px</span>
+    <img src="automatron-logo.svg" width="32" style="filter:invert(1)"/>
+  </div>
+  <div class="size-col">
+    <span>16 px</span>
+    <img src="automatron-logo.svg" width="16" style="filter:invert(1)"/>
+  </div>
+</div>
+
+<div class="dl-bar">
+  <a href="automatron-logo.svg" download="automatron-logo.svg">Download SVG</a>
+  <a class="sec" href="strategic-report.html">View Report</a>
+</div>
+
+</body>
+</html>

@@ -17,15 +17,17 @@ interface IssuesBoardProps {
   onStartPreview: () => Promise<void> | void;
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
+  onImplementAider: (issueNumber: number) => void;
   reviewingIssues: Set<number>;
   assigningIssues: Set<number>;
+  implementingIssues: Set<number>;
   isSyncing: boolean;
   isAuditing: boolean;
 }
 
 export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
-  reviewingIssues, assigningIssues, isSyncing, isAuditing,
+  onImplementAider, reviewingIssues, assigningIssues, implementingIssues, isSyncing, isAuditing,
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
@@ -216,8 +218,10 @@ export function IssuesBoard({
                       issue={issue}
                       onReview={onReview}
                       onAssignCopilot={onAssignCopilot}
+                      onImplementAider={onImplementAider}
                       isReviewing={reviewingIssues.has(issue.issue_number)}
                       isAssigning={assigningIssues.has(issue.issue_number)}
+                      isImplementing={implementingIssues.has(issue.issue_number)}
                     />
                   ))}
                 </div>

@@ -80,6 +80,7 @@ interface ProjectState {
   auditProject: (projectId: string) => Promise<void>;
   assignToCopilot: (projectId: string) => Promise<{ assigned: number; failed: number }>;
   assignIssueToCopilot: (projectId: string, issueNumber: number) => Promise<void>;
+  implementWithAider: (projectId: string, issueNumber: number) => Promise<void>;
   triggerPRReview: (projectId: string, issueNumber: number, prNumber: number) => Promise<void>;
 }
 
@@ -462,6 +463,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   assignIssueToCopilot: async (projectId, issueNumber) => {
     try {
       await api.assignIssueToCopilot(projectId, issueNumber);
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  implementWithAider: async (projectId, issueNumber) => {
+    try {
+      await api.implementWithAider(projectId, issueNumber);
     } catch (error: any) {
       set({ error: error.message });
     }

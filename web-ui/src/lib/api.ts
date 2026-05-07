@@ -248,6 +248,13 @@ export async function assignIssueToCopilot(
   return request(`/api/projects/${projectId}/issues/${issueNumber}/assign-copilot`, { method: "POST" });
 }
 
+export async function implementWithAider(
+  projectId: string,
+  issueNumber: number
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/issues/${issueNumber}/implement`, { method: "POST" });
+}
+
 export async function reviewPR(
   projectId: string,
   issueNumber: number,

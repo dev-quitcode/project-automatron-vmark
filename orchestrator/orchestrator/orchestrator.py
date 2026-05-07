@@ -1081,6 +1081,77 @@ async def assign_to_copilot_issue(project_id: str, issue_number: int) -> dict:
     return {"assigned": 1, "issue_number": issue_number}
 
 
+async def implement_with_aider(project_id: str, issue_number: int) -> None:
+    """Clone the repo, run Aider on the issue, push a branch, open a PR."""
+    from orchestrator.aider_agent import implement_issue
+    from orchestrator.models.project import get_github_issue, update_github_issue_pr
+
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        await orch._log(f"Aider #{issue_number}: no repo configured", "", "ERROR")
+        return
+
+    # Read issue from GitHub
+    issue_data = await orch.gh.get_issue(owner, repo, issue_number)
+    if not issue_data:
+        await orch._log(f"Aider #{issue_number}: issue not found", "", "ERROR")
+        return
+
+    issue_title = issue_data.get("title", f"Issue #{issue_number}")
+    issue_body = issue_data.get("body", "")
+    default_branch = project.get("default_branch") or "main"
+
+    llm_cfg = await orch._llm_config()
+    model = llm_cfg.get("builder", {}).get("model", "claude-opus-4-5")
+    # Strip provider prefix if present (aider adds claude/ itself)
+    model = model.replace("claude/", "").replace("anthropic/", "")
+
+    await orch._log(f"Aider starting on #{issue_number}", issue_title, "RUNNING")
+
+    branch = await implement_issue(
+        project_id=project_id,
+        owner=owner,
+        repo=repo,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        default_branch=default_branch,
+        model=model,
+    )
+
+    if not branch:
+        await orch._log(f"Aider #{issue_number}: implementation failed", "", "ERROR")
+        await emit_error(project_id, f"Aider failed to implement issue #{issue_number}")
+        return
+
+    # Open PR
+    pr_title = f"fix: implement #{issue_number} {issue_title}"
+    pr_body = f"Closes #{issue_number}\n\nImplemented by Aider + Claude ({model})."
+    try:
+        pr = await orch.gh.create_pull_request(
+            owner, repo,
+            title=pr_title,
+            body=pr_body,
+            head=branch,
+            base=default_branch,
+        )
+        pr_number = pr["number"]
+        pr_url = pr["html_url"]
+        await orch._log(f"Aider #{issue_number}: PR opened", f"PR #{pr_number}", "SUCCESS")
+
+        # Update issue in DB
+        from orchestrator.models.project import update_github_issue_pr, list_github_issues
+        await update_github_issue_pr(project_id, issue_number, pr_number, pr_url, status="pr_open")
+        updated_issues = await list_github_issues(project_id)
+        await emit_issues_updated(project_id, updated_issues)
+    except Exception as exc:
+        await orch._log(f"Aider #{issue_number}: PR creation failed", str(exc), "ERROR")
+        await emit_error(project_id, f"Aider: PR failed for #{issue_number}: {exc}")
+
+
 async def review_pr(project_id: str, issue_number: int, pr_number: int) -> None:
     orch = GitHubOrchestrator(project_id)
     await orch.review_pr(issue_number, pr_number)

@@ -68,6 +68,7 @@ export default function ProjectPage() {
   const [isAuditing, setIsAuditing] = useState(false);
   const [reviewingIssues, setReviewingIssues] = useState<Set<number>>(new Set());
   const [assigningIssues, setAssigningIssues] = useState<Set<number>>(new Set());
+  const [implementingIssues, setImplementingIssues] = useState<Set<number>>(new Set());
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -123,6 +124,7 @@ export default function ProjectPage() {
     restartPreview,
     triggerPRReview,
     assignIssueToCopilot,
+    implementWithAider,
     updateDeployTarget,
     updateProjectLlmConfig,
     updatePlan,
@@ -256,6 +258,19 @@ export default function ProjectPage() {
       await assignIssueToCopilot(projectId, issueNumber);
     } finally {
       setAssigningIssues((prev) => {
+        const next = new Set(prev);
+        next.delete(issueNumber);
+        return next;
+      });
+    }
+  };
+
+  const handleImplementAider = async (issueNumber: number) => {
+    setImplementingIssues((prev) => new Set(prev).add(issueNumber));
+    try {
+      await implementWithAider(projectId, issueNumber);
+    } finally {
+      setImplementingIssues((prev) => {
         const next = new Set(prev);
         next.delete(issueNumber);
         return next;
@@ -847,8 +862,10 @@ export default function ProjectPage() {
               onStartPreview={() => restartPreview(projectId)}
               onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
               onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
+              onImplementAider={(issueNumber) => void handleImplementAider(issueNumber)}
               reviewingIssues={reviewingIssues}
               assigningIssues={assigningIssues}
+              implementingIssues={implementingIssues}
               isSyncing={isSyncingIssues}
               isAuditing={isAuditing}
             />

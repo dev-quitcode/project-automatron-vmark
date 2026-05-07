@@ -5,15 +5,17 @@ import type { GithubIssue, IssueStatus } from "@/lib/types";
 import {
   ExternalLink, GitPullRequest, CheckCircle2, Circle,
   GitMerge, Loader2, ChevronDown, ChevronUp, XCircle,
-  Zap, Eye, ThumbsUp,
+  Zap, Eye, ThumbsUp, Bot,
 } from "lucide-react";
 
 interface IssueCardProps {
   issue: GithubIssue;
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
+  onImplementAider: (issueNumber: number) => void;
   isReviewing: boolean;
   isAssigning: boolean;
+  isImplementing: boolean;
 }
 
 type VisualState =
@@ -56,7 +58,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-export function IssueCard({ issue, onReview, onAssignCopilot, isReviewing, isAssigning }: IssueCardProps) {
+export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, isReviewing, isAssigning, isImplementing }: IssueCardProps) {
   const [reviewExpanded, setReviewExpanded] = useState(false);
   const vs = toVisualState(issue);
   const meta = STATE_META[vs];
@@ -113,12 +115,21 @@ export function IssueCard({ issue, onReview, onAssignCopilot, isReviewing, isAss
               </a>
             )}
 
-            {/* Assign Copilot — open, no PR, not yet assigned */}
+            {/* Assign Copilot — open, no PR */}
             {vs === "open" && (
-              <button onClick={() => onAssignCopilot(issue.issue_number)} disabled={isAssigning}
+              <button onClick={() => onAssignCopilot(issue.issue_number)} disabled={isAssigning || isImplementing}
                 className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50">
                 {isAssigning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
                 {isAssigning ? "Assigning…" : "Assign Copilot"}
+              </button>
+            )}
+
+            {/* Implement with Aider — open, no PR */}
+            {vs === "open" && (
+              <button onClick={() => onImplementAider(issue.issue_number)} disabled={isImplementing || isAssigning}
+                className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/10 transition-colors disabled:opacity-50">
+                {isImplementing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
+                {isImplementing ? "Implementing…" : "Implement"}
               </button>
             )}
 

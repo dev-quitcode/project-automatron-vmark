@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 390" width="320" height="390">
+  <title>Automatron</title>
+
+  <!--
+    AUTOMATRON INSIGNIA
+    Three-spike crown (the crown silhouette reads as an "A"):
+      centre spike = apex | two horns = angled strokes | valleys = open counter
+      forehead chevron = the crossbar
+    Face structure: angular eyes, chin guard, faction delta at base
+  -->
+
+  <!-- ── Outer silhouette ─────────────────────────────────────── -->
+  <path fill="#000" d="
+    M 160,10
+    L 186,48  L 202,72
+    L 228,38  L 250,62  L 274,92  L 298,124
+    L 272,152 L 266,176 L 256,252 L 240,308 L 212,350 L 184,370 L 160,382
+    L 136,370 L 108,350 L  80,308 L  64,252 L  54,176 L  48,152 L  22,124
+    L  46,92  L  70,62  L  92,38
+    L 118,72  L 134,48
+    Z
+  "/>
+
+  <!-- ── Forehead chevron — doubles as the A crossbar ─────────── -->
+  <polygon fill="#fff" points="
+    160,82
+    197,104  198,120
+    160,102
+    122,120  123,104
+  "/>
+
+  <!-- ── Left eye ──────────────────────────────────────────────── -->
+  <polygon fill="#fff" points="
+    133,126
+     54,142
+     58,168
+    137,156
+  "/>
+
+  <!-- ── Right eye ─────────────────────────────────────────────── -->
+  <polygon fill="#fff" points="
+    187,126
+    266,142
+    262,168
+    183,156
+  "/>
+
+  <!-- ── Chin guard ─────────────────────────────────────────────── -->
+  <polygon fill="#fff" points="
+     90,188   86,222
+    120,234  160,230  200,234
+    234,222  230,188
+    198,196  160,192  122,196
+  "/>
+
+  <!-- ── Faction delta — small "A" brand mark at the chin ──────── -->
+  <polygon fill="#fff" points="160,330  146,356  174,356"/>
+
+</svg>
