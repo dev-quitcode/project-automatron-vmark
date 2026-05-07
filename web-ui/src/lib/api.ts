@@ -265,3 +265,13 @@ export async function reviewPR(
     body: JSON.stringify({ issue_number: issueNumber, pr_number: prNumber }),
   });
 }
+
+export async function createIssueFromPrompt(
+  projectId: string,
+  prompt: string
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/issues/create-from-prompt`, {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}

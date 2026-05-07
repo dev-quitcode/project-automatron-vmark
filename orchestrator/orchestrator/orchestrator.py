@@ -1152,6 +1152,63 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         await emit_error(project_id, f"Aider: PR failed for #{issue_number}: {exc}")
 
 
+async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
+    """Use the architect LLM to turn a free-text prompt into a structured GitHub issue."""
+    from orchestrator.models.project import create_github_issue, list_github_issues
+
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        await orch._log("create_issue: no repo configured", "", "ERROR")
+        return
+
+    await orch._log("Creating issue from prompt", prompt[:120], "RUNNING")
+
+    llm_cfg = await orch._llm_config()
+    arch_cfg = llm_cfg.get("architect", {})
+
+    stack_summary = await _build_stack_summary(orch.gh, owner, repo)
+
+    prompt_tpl = (Path(__file__).parent.parent / "prompts" / "issue_from_prompt_v1.txt").read_text()
+    user_msg = prompt_tpl.format(prompt=prompt, stack_context=stack_summary or "(not available)")
+
+    raw = await call_llm(
+        system="You are a senior software engineer. Output only valid JSON.",
+        messages=[{"role": "user", "content": user_msg}],
+        llm_config=arch_cfg,
+        max_tokens=2000,
+    )
+
+    try:
+        spec = json.loads(raw.strip())
+    except Exception:
+        await orch._log("create_issue: LLM returned invalid JSON", raw[:300], "ERROR")
+        return
+
+    title = spec.get("title", prompt[:80])
+    epic = spec.get("epic") or "General"
+    body = _render_issue_body(spec, epic, "", stack_summary)
+
+    gh_issue = await orch.gh.create_issue(owner, repo, title=title, body=body)
+    issue_number = gh_issue["number"]
+    html_url = gh_issue["html_url"]
+
+    await create_github_issue(
+        str(uuid.uuid4()),
+        project_id,
+        issue_number,
+        title,
+        epic=epic,
+        copilot_workspace_url=html_url,
+    )
+
+    updated_issues = await list_github_issues(project_id)
+    await emit_issues_updated(project_id, updated_issues)
+    await orch._log(f"Issue #{issue_number} created", title, "SUCCESS")
+
+
 async def review_pr(project_id: str, issue_number: int, pr_number: int) -> None:
     orch = GitHubOrchestrator(project_id)
     await orch.review_pr(issue_number, pr_number)

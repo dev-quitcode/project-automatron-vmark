@@ -82,6 +82,7 @@ interface ProjectState {
   assignIssueToCopilot: (projectId: string, issueNumber: number) => Promise<void>;
   implementWithAider: (projectId: string, issueNumber: number) => Promise<void>;
   triggerPRReview: (projectId: string, issueNumber: number, prNumber: number) => Promise<void>;
+  createIssueFromPrompt: (projectId: string, prompt: string) => Promise<void>;
 }
 
 function getHumanReason(stage?: ProjectStage | null): string | null {
@@ -479,6 +480,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   triggerPRReview: async (projectId, issueNumber, prNumber) => {
     try {
       await api.reviewPR(projectId, issueNumber, prNumber);
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  createIssueFromPrompt: async (projectId, prompt) => {
+    try {
+      await api.createIssueFromPrompt(projectId, prompt);
     } catch (error: any) {
       set({ error: error.message });
     }

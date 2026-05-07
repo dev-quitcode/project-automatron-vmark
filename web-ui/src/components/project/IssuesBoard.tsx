@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send,
 } from "lucide-react";
 
 interface IssuesBoardProps {
@@ -18,19 +18,25 @@ interface IssuesBoardProps {
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
   onImplementAider: (issueNumber: number) => void;
+  onCreateIssue: (prompt: string) => void;
   reviewingIssues: Set<number>;
   assigningIssues: Set<number>;
   implementingIssues: Set<number>;
   isSyncing: boolean;
   isAuditing: boolean;
+  isCreatingIssue: boolean;
 }
 
 export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
-  onImplementAider, reviewingIssues, assigningIssues, implementingIssues, isSyncing, isAuditing,
+  onImplementAider, onCreateIssue, reviewingIssues, assigningIssues, implementingIssues,
+  isSyncing, isAuditing, isCreatingIssue,
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
+  const [showNewIssueForm, setShowNewIssueForm] = useState(false);
+  const [newIssuePrompt, setNewIssuePrompt] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleStartPreview = async () => {
     setIsStartingPreview(true);
@@ -40,6 +46,14 @@ export function IssuesBoard({
       // Keep spinner until previewUrl arrives via WebSocket (max 3 min)
       setTimeout(() => setIsStartingPreview(false), 180_000);
     }
+  };
+
+  const handleSubmitNewIssue = () => {
+    const prompt = newIssuePrompt.trim();
+    if (!prompt || isCreatingIssue) return;
+    onCreateIssue(prompt);
+    setNewIssuePrompt("");
+    setShowNewIssueForm(false);
   };
 
   // Group by epic — preserve issue_number order (chronological)
@@ -116,8 +130,40 @@ export function IssuesBoard({
             <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
             {isSyncing ? "Syncing..." : "Sync"}
           </button>
+          <button
+            onClick={() => { setShowNewIssueForm((v) => !v); setTimeout(() => textareaRef.current?.focus(), 50); }}
+            disabled={isCreatingIssue}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">
+            {isCreatingIssue ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+            {isCreatingIssue ? "Creating..." : "New Issue"}
+          </button>
         </div>
       </div>
+
+      {/* New Issue inline form */}
+      {showNewIssueForm && (
+        <div className="rounded-xl border border-border bg-card p-3 space-y-2">
+          <textarea
+            ref={textareaRef}
+            value={newIssuePrompt}
+            onChange={(e) => setNewIssuePrompt(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmitNewIssue(); }}
+            placeholder="Describe the issue in plain English… e.g. Fix OTP SMS sending — it fails silently when Twilio returns an error"
+            rows={3}
+            className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button onClick={() => { setShowNewIssueForm(false); setNewIssuePrompt(""); }}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Cancel
+            </button>
+            <button onClick={handleSubmitNewIssue} disabled={!newIssuePrompt.trim() || isCreatingIssue}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50">
+              <Send className="h-3 w-3" /> Create Issue
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
