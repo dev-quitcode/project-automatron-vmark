@@ -86,8 +86,9 @@ async def implement_issue(
     if settings.github_token:
         env["GITHUB_TOKEN"] = settings.github_token
 
-    aider_cmd = [
-        "aider",
+    import shutil
+
+    aider_args = [
         "--model", f"claude/{model}",
         "--message", task,
         "--yes",
@@ -97,6 +98,16 @@ async def implement_issue(
         "--git",
         "--auto-commits",
     ]
+
+    if shutil.which("aider"):
+        aider_cmd = ["aider", *aider_args]
+    elif shutil.which("uvx"):
+        aider_cmd = ["uvx", "aider-chat", *aider_args]
+    elif shutil.which("uv"):
+        aider_cmd = ["uv", "tool", "run", "aider-chat", *aider_args]
+    else:
+        logger.error("Aider: no aider/uvx/uv binary found in PATH")
+        return None
 
     logger.info("Aider: running on issue #%d (%s)", issue_number, issue_title)
     rc, out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
