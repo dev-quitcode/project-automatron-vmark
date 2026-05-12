@@ -17,11 +17,30 @@ logger = logging.getLogger(__name__)
 
 # ── Port helpers ──────────────────────────────────────────────────────────────
 
+def _get_used_host_ports() -> set[int]:
+    """Return set of host ports currently bound by any Docker container."""
+    try:
+        import docker as docker_sdk
+        client = docker_sdk.from_env()
+        used: set[int] = set()
+        for container in client.containers.list():
+            for bindings in (container.ports or {}).values():
+                for b in (bindings or []):
+                    try:
+                        used.add(int(b["HostPort"]))
+                    except (KeyError, ValueError, TypeError):
+                        pass
+        client.close()
+        return used
+    except Exception:
+        return set()
+
+
 def _find_free_port() -> int:
+    used = _get_used_host_ports()
     for port in range(settings.port_range_start, settings.port_range_end + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
+        if port not in used:
+            return port
     raise RuntimeError("No free port available in configured range")
 
 
@@ -152,32 +171,50 @@ async def run_preview_locally(project_id: str, owner: str, repo: str) -> str | N
     container_name = f"preview-{project_id}"
     image_name = f"automatron-preview-{project_id}"
 
+    import docker as docker_sdk
+    client = docker_sdk.from_env()
+
     # Stop any existing container for this project
-    _run(["docker", "rm", "-f", container_name])
+    try:
+        old = client.containers.get(container_name)
+        old.remove(force=True)
+        logger.info("Preview: removed old container %s", container_name)
+    except docker_sdk.errors.NotFound:
+        pass
 
     # Build
     logger.info("Preview: building image %s", image_name)
-    rc, out = _run(["docker", "build", "-t", image_name, "."], cwd=repo_dir)
-    if rc != 0:
-        logger.error("Preview: docker build failed:\n%s", out[-2000:])
+    try:
+        _, build_logs = client.images.build(path=str(repo_dir), tag=image_name, rm=True)
+        for chunk in build_logs:
+            if "stream" in chunk:
+                line = chunk["stream"].rstrip()
+                if line:
+                    logger.debug("Preview build: %s", line)
+    except docker_sdk.errors.BuildError as exc:
+        logger.error("Preview: docker build failed: %s", exc)
+        client.close()
         return None
 
     internal_port = _detect_internal_port(repo_dir)
 
     # Run
-    rc, out = _run([
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-p", f"{port}:{internal_port}",
-        "--restart", "unless-stopped",
-        image_name,
-    ])
-    if rc != 0:
-        logger.error("Preview: docker run failed:\n%s", out)
+    try:
+        client.containers.run(
+            image_name,
+            detach=True,
+            name=container_name,
+            ports={f"{internal_port}/tcp": port},
+            restart_policy={"Name": "unless-stopped"},
+        )
+    except Exception as exc:
+        logger.error("Preview: docker run failed: %s", exc)
+        client.close()
         return None
 
+    client.close()
+
     # Use public hostname when deployed, localhost when running locally
-    from orchestrator.config import settings
     from urllib.parse import urlparse
     public = (settings.automatron_public_url or "").rstrip("/")
     if public:
