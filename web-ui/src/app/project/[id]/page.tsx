@@ -68,6 +68,8 @@ export default function ProjectPage() {
   const [isAuditing, setIsAuditing] = useState(false);
   const [reviewingIssues, setReviewingIssues] = useState<Set<number>>(new Set());
   const [assigningIssues, setAssigningIssues] = useState<Set<number>>(new Set());
+  const [implementingIssues, setImplementingIssues] = useState<Set<number>>(new Set());
+  const [isCreatingIssue, setIsCreatingIssue] = useState(false);
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -123,6 +125,8 @@ export default function ProjectPage() {
     restartPreview,
     triggerPRReview,
     assignIssueToCopilot,
+    implementWithAider,
+    createIssueFromPrompt,
     updateDeployTarget,
     updateProjectLlmConfig,
     updatePlan,
@@ -260,6 +264,29 @@ export default function ProjectPage() {
         next.delete(issueNumber);
         return next;
       });
+    }
+  };
+
+  const handleImplementAider = async (issueNumber: number) => {
+    setImplementingIssues((prev) => new Set(prev).add(issueNumber));
+    try {
+      await implementWithAider(projectId, issueNumber);
+    } finally {
+      setImplementingIssues((prev) => {
+        const next = new Set(prev);
+        next.delete(issueNumber);
+        return next;
+      });
+    }
+  };
+
+  const handleCreateIssue = async (prompt: string) => {
+    setIsCreatingIssue(true);
+    try {
+      await createIssueFromPrompt(projectId, prompt);
+    } finally {
+      // Keep spinner until WS fires issues:updated (max 60s)
+      setTimeout(() => setIsCreatingIssue(false), 60_000);
     }
   };
 
@@ -847,10 +874,14 @@ export default function ProjectPage() {
               onStartPreview={() => restartPreview(projectId)}
               onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
               onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
+              onImplementAider={(issueNumber) => void handleImplementAider(issueNumber)}
+              onCreateIssue={(prompt) => void handleCreateIssue(prompt)}
               reviewingIssues={reviewingIssues}
               assigningIssues={assigningIssues}
+              implementingIssues={implementingIssues}
               isSyncing={isSyncingIssues}
               isAuditing={isAuditing}
+              isCreatingIssue={isCreatingIssue}
             />
           </div>
         )}

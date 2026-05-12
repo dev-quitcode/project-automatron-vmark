@@ -248,6 +248,13 @@ export async function assignIssueToCopilot(
   return request(`/api/projects/${projectId}/issues/${issueNumber}/assign-copilot`, { method: "POST" });
 }
 
+export async function implementWithAider(
+  projectId: string,
+  issueNumber: number
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/issues/${issueNumber}/implement`, { method: "POST" });
+}
+
 export async function reviewPR(
   projectId: string,
   issueNumber: number,
@@ -256,5 +263,15 @@ export async function reviewPR(
   return request(`/api/projects/${projectId}/review-pr`, {
     method: "POST",
     body: JSON.stringify({ issue_number: issueNumber, pr_number: prNumber }),
+  });
+}
+
+export async function createIssueFromPrompt(
+  projectId: string,
+  prompt: string
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/issues/create-from-prompt`, {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
   });
 }

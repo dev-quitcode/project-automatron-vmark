@@ -194,6 +194,24 @@ class GitHubClient:
             response.raise_for_status()
             return response.json()
 
+    async def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/pulls",
+                json={"title": title, "body": body, "head": head, "base": base},
+            )
+            response.raise_for_status()
+            return response.json()
+
     # ── Pull Requests ─────────────────────────────────────────────────────────
 
     async def list_prs(

@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GitHub Copilot Limits — Automatron Reference</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --primary: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #a371f7;
+      --orange: #f0883e;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #58a6ff22, #a371f722);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+    }
+
+    .header-text h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .header-text p {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Section headings */
+    h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 2rem 0 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    h2::before {
+      content: '';
+      display: inline-block;
+      width: 3px;
+      height: 1.1rem;
+      background: var(--primary);
+      border-radius: 2px;
+    }
+
+    /* Plan comparison table */
+    .plan-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .plan-table th {
+      background: var(--surface2);
+      padding: 0.6rem 1rem;
+      text-align: left;
+      font-weight: 600;
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .plan-table th:not(:first-child) {
+      text-align: center;
+    }
+
+    .plan-table td {
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .plan-table td:not(:first-child) {
+      text-align: center;
+    }
+
+    .plan-table tr:last-child td { border-bottom: none; }
+
+    .plan-table tbody tr:hover { background: var(--surface2); }
+
+    .plan-table .feature { color: var(--muted); font-size: 0.82rem; }
+
+    .badge-yes   { color: var(--green);  font-weight: 600; }
+    .badge-no    { color: var(--red);    font-weight: 600; }
+    .badge-maybe { color: var(--yellow); font-weight: 600; }
+    .badge-plan  { color: var(--purple); font-weight: 600; }
+
+    /* Limit cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+
+    .card-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .card-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .card-value.green  { color: var(--green); }
+    .card-value.yellow { color: var(--yellow); }
+    .card-value.red    { color: var(--red); }
+    .card-value.blue   { color: var(--primary); }
+    .card-value.purple { color: var(--purple); }
+
+    .card-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+
+    /* Alert boxes */
+    .alert {
+      border-radius: 8px;
+      padding: 0.9rem 1.1rem;
+      font-size: 0.875rem;
+      margin-bottom: 1rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-start;
+      border: 1px solid;
+    }
+
+    .alert-icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+
+    .alert-red    { background: #f8514910; border-color: #f8514940; color: #ffa198; }
+    .alert-yellow { background: #d2992210; border-color: #d2992240; color: #e3b341; }
+    .alert-blue   { background: #58a6ff10; border-color: #58a6ff40; color: #79c0ff; }
+    .alert-green  { background: #3fb95010; border-color: #3fb95040; color: #56d364; }
+
+    /* Code block */
+    .code-block {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem 1rem;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.82rem;
+      color: var(--text);
+      overflow-x: auto;
+      margin-bottom: 1rem;
+      line-height: 1.7;
+    }
+
+    .code-block .comment { color: var(--muted); }
+    .code-block .key     { color: var(--primary); }
+    .code-block .val-s   { color: var(--green); }
+    .code-block .val-n   { color: var(--orange); }
+    .code-block .val-b   { color: var(--purple); }
+
+    /* Steps */
+    .steps { list-style: none; margin-bottom: 1.5rem; }
+
+    .steps li {
+      display: flex;
+      gap: 0.9rem;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+      align-items: flex-start;
+    }
+
+    .steps li:last-child { border-bottom: none; }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-top: 1px;
+    }
+
+    .steps li span { color: var(--text); }
+    .steps li small { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+
+    /* Footer */
+    .footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.78rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .tag {
+      display: inline-block;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.1rem 0.45rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      font-family: monospace;
+    }
+
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    p { margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">⚡</div>
+    <div class="header-text">
+      <h1>GitHub Copilot — Limits &amp; Constraints</h1>
+      <p>Reference for Automatron integration · April 2026</p>
+    </div>
+  </div>
+
+  <!-- TL;DR -->
+  <div class="alert alert-yellow">
+    <span class="alert-icon">⚠️</span>
+    <div>
+      <strong>Key constraint:</strong> The Copilot <em>coding agent</em> (the one that opens PRs autonomously)
+      cannot be triggered via the public GitHub REST or GraphQL API. It can only be assigned
+      through the GitHub web UI. Automatron works around this by creating issues and linking you
+      directly to the GitHub assignment flow.
+    </div>
+  </div>
+
+  <!-- Plans -->
+  <h2>Plan Availability</h2>
+  <table class="plan-table">
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th>Free</th>
+        <th>Pro / Pro+</th>
+        <th>Business</th>
+        <th>Enterprise</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Code completions (IDE)</td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+      </tr>
+      <tr>
+        <td>Chat (github.com / IDE)</td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+        <td><span class="badge-yes">✓</span></td>
+      </tr>
+      <tr>
+        <td>Coding agent (opens PRs)</td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-maybe">Pro+ only</span></td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-yes">✓</span></td>
+      </tr>
+      <tr>
+        <td>Assign agent via web UI</td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-maybe">Pro+ only</span></td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-yes">✓</span></td>
+      </tr>
+      <tr>
+        <td>Assign agent via API</td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-no">✗</span></td>
+        <td><span class="badge-no">✗ (not exposed)</span></td>
+      </tr>
+      <tr>
+        <td><span class="feature">Monthly completions (Free)</span></td>
+        <td>2,000</td>
+        <td>Unlimited</td>
+        <td>Unlimited</td>
+        <td>Unlimited</td>
+      </tr>
+      <tr>
+        <td><span class="feature">Monthly chat messages (Free)</span></td>
+        <td>50</td>
+        <td>Unlimited</td>
+        <td>Unlimited</td>
+        <td>Unlimited</td>
+      </tr>
+      <tr>
+        <td><span class="feature">Coding agent tasks / month</span></td>
+        <td>—</td>
+        <td>10 (Pro+)</td>
+        <td>—</td>
+        <td>300 per seat</td>
+      </tr>
+      <tr>
+        <td><span class="feature">Price (per seat/month)</span></td>
+        <td>Free</td>
+        <td>$10 / $19</td>
+        <td>$19</td>
+        <td>$39</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Coding agent limits -->
+  <h2>Coding Agent Limits</h2>
+  <div class="cards">
+    <div class="card">
+      <div class="card-label">Tasks per seat / month</div>
+      <div class="card-value purple">300</div>
+      <div class="card-sub">Enterprise · resets monthly</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Tasks / month (Pro+)</div>
+      <div class="card-value yellow">10</div>
+      <div class="card-sub">Personal accounts only</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Max repo size</div>
+      <div class="card-value blue">~1 GB</div>
+      <div class="card-sub">Agent clones entire repo</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Session timeout</div>
+      <div class="card-value yellow">30 min</div>
+      <div class="card-sub">Per agent task run</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Max files changed</div>
+      <div class="card-value blue">~50</div>
+      <div class="card-sub">Practical soft limit per PR</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Concurrency</div>
+      <div class="card-value red">1</div>
+      <div class="card-sub">One active task per issue</div>
+    </div>
+  </div>
+
+  <!-- API limitations -->
+  <h2>API Limitations</h2>
+
+  <div class="alert alert-red">
+    <span class="alert-icon">🚫</span>
+    <div>
+      <strong>No public API for agent assignment.</strong> The <code>POST /repos/{owner}/{repo}/issues/{number}/assignees</code>
+      endpoint returns <strong>422</strong> when <code>"copilot"</code> is passed as an assignee.
+      The <code>@github-copilot</code> comment trigger posts successfully (201) but the agent does not activate —
+      GitHub uses an internal, undocumented API for this.
+    </div>
+  </div>
+
+  <table class="plan-table">
+    <thead>
+      <tr>
+        <th>API Action</th>
+        <th>Works?</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Create issue via REST API</td>
+        <td><span class="badge-yes">✓ Yes</span></td>
+        <td>Used by Automatron to create tasks</td>
+      </tr>
+      <tr>
+        <td>Add label / milestone via API</td>
+        <td><span class="badge-yes">✓ Yes</span></td>
+        <td>Fully supported</td>
+      </tr>
+      <tr>
+        <td>Assign <code>copilot</code> as issue assignee</td>
+        <td><span class="badge-no">✗ 422</span></td>
+        <td>GitHub rejects it — not a real account slug</td>
+      </tr>
+      <tr>
+        <td>Assign <code>copilot-swe-agent[bot]</code> as assignee</td>
+        <td><span class="badge-yes">✓ Works</span></td>
+        <td>Correct bot slug — Automatron uses this. Requires Copilot Enterprise or Pro+.</td>
+      </tr>
+      <tr>
+        <td>Post <code>@github-copilot</code> comment</td>
+        <td><span class="badge-maybe">⚠ Posts but no effect</span></td>
+        <td>Returns 201 but agent does not activate via comment trigger</td>
+      </tr>
+      <tr>
+        <td>Register repo webhook via API</td>
+        <td><span class="badge-yes">✓ Yes</span></td>
+        <td>Automatron auto-registers on project start</td>
+      </tr>
+      <tr>
+        <td>Read PR diff via API</td>
+        <td><span class="badge-yes">✓ Yes</span></td>
+        <td>Used for AI code review</td>
+      </tr>
+      <tr>
+        <td>Merge PR via API</td>
+        <td><span class="badge-yes">✓ Yes</span></td>
+        <td>Requires write access</td>
+      </tr>
+      <tr>
+        <td>List / read Copilot agent sessions</td>
+        <td><span class="badge-no">✗ No</span></td>
+        <td>No public endpoint</td>
+      </tr>
+      <tr>
+        <td>Cancel a running agent task</td>
+        <td><span class="badge-no">✗ No</span></td>
+        <td>Must use GitHub web UI</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- What Automatron does instead -->
+  <h2>How Automatron Works Around This</h2>
+  <ul class="steps">
+    <li>
+      <div class="step-num">1</div>
+      <div>
+        <span>Automatron creates GitHub Issues via REST API</span>
+        <small>Each task from the architect plan becomes a labelled, milestoned issue</small>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">2</div>
+      <div>
+        <span>Each issue includes an "Assign on GitHub" button in Automatron UI</span>
+        <small>Links directly to the issue on github.com where you click "Assign to Agent"</small>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">3</div>
+      <div>
+        <span>Copilot agent opens a PR with <code>Closes #N</code> in the body</span>
+        <small>This is the standard convention Copilot follows automatically</small>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">4</div>
+      <div>
+        <span>GitHub webhook fires → Automatron receives <code>pull_request</code> event</span>
+        <small>Webhook is auto-registered when you set AUTOMATRON_PUBLIC_URL in .env</small>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">5</div>
+      <div>
+        <span>Issue status updates to <em>PR open</em> — AI review triggers automatically</span>
+        <small>UI board updates in real-time via WebSocket, no manual sync needed</small>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">6</div>
+      <div>
+        <span>When PR is merged, webhook fires again → status becomes <em>Merged</em></span>
+        <small>Full lifecycle tracked without any polling</small>
+      </div>
+    </li>
+  </ul>
+
+  <!-- Required plan -->
+  <h2>Minimum Required Plan for Automatron</h2>
+
+  <div class="alert alert-blue">
+    <span class="alert-icon">ℹ️</span>
+    <div>
+      <strong>For org repos (recommended):</strong> GitHub Copilot <strong>Enterprise</strong> ($39/seat/month)
+      — enables the coding agent button on issues in org repositories. 300 tasks/seat/month.
+    </div>
+  </div>
+  <div class="alert alert-green">
+    <span class="alert-icon">✅</span>
+    <div>
+      <strong>For personal repos:</strong> GitHub Copilot <strong>Pro+</strong> ($19/month)
+      — includes coding agent for personal account repositories. Limited to 10 tasks/month.
+    </div>
+  </div>
+  <div class="alert alert-red">
+    <span class="alert-icon">🚫</span>
+    <div>
+      <strong>Copilot Business ($19/seat/month) does NOT include the coding agent.</strong>
+      The "Assign to Agent" button will not appear on issues, even though chat and completions work fine.
+    </div>
+  </div>
+
+  <!-- Example webhook payload -->
+  <h2>Webhook Event Automatron Listens To</h2>
+  <p>Only the <code>pull_request</code> event is needed. Automatron ignores all other event types.</p>
+  <div class="code-block">
+<span class="comment">// POST /api/webhooks/github</span>
+<span class="comment">// X-GitHub-Event: pull_request</span>
+{
+  <span class="key">"action"</span>: <span class="val-s">"opened"</span>,            <span class="comment">// or "closed"</span>
+  <span class="key">"pull_request"</span>: {
+    <span class="key">"number"</span>: <span class="val-n">42</span>,
+    <span class="key">"html_url"</span>: <span class="val-s">"https://github.com/org/repo/pull/42"</span>,
+    <span class="key">"body"</span>: <span class="val-s">"Closes #7"</span>,             <span class="comment">// ← Automatron scans for this</span>
+    <span class="key">"merged"</span>: <span class="val-b">false</span>
+  },
+  <span class="key">"repository"</span>: {
+    <span class="key">"name"</span>: <span class="val-s">"my-project"</span>,
+    <span class="key">"owner"</span>: { <span class="key">"login"</span>: <span class="val-s">"Quitcode-Dev"</span> }
+  }
+}
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <span>Automatron · Internal Reference</span>
+    <span>
+      Sources:
+      <a href="https://docs.github.com/en/copilot/about-github-copilot/subscription-plans-for-github-copilot" target="_blank">GitHub Copilot plans</a>
+      ·
+      <a href="https://docs.github.com/en/copilot/using-github-copilot/using-copilot-coding-agent-to-work-on-tasks" target="_blank">Coding agent docs</a>
+      · Last updated April 2026
+    </span>
+  </div>
+
+</div>
+</body>
+</html>

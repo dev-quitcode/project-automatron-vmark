@@ -39,6 +39,8 @@ from orchestrator.orchestrator import (
     assign_to_copilot as orch_assign_copilot,
     assign_to_copilot_issue as orch_assign_copilot_issue,
     audit_project as orch_audit_project,
+    create_issue_from_prompt as orch_create_issue_from_prompt,
+    implement_with_aider as orch_implement_aider,
     resume_project as orch_resume,
     review_pr as orch_review_pr,
     start_project as orch_start,
@@ -318,6 +320,28 @@ async def api_assign_copilot(project_id: str) -> dict:
 async def api_assign_copilot_issue(project_id: str, issue_number: int) -> dict:
     await _get_required_project(project_id)
     return await orch_assign_copilot_issue(project_id, issue_number)
+
+
+@router.post("/projects/{project_id}/issues/{issue_number}/implement")
+async def api_implement_aider(
+    project_id: str, issue_number: int, background_tasks: BackgroundTasks
+) -> dict[str, str]:
+    await _get_required_project(project_id)
+    background_tasks.add_task(orch_implement_aider, project_id, issue_number)
+    return {"status": "started", "issue_number": str(issue_number)}
+
+
+class CreateIssueFromPromptRequest(BaseModel):
+    prompt: str
+
+
+@router.post("/projects/{project_id}/issues/create-from-prompt")
+async def api_create_issue_from_prompt(
+    project_id: str, req: CreateIssueFromPromptRequest, background_tasks: BackgroundTasks
+) -> dict[str, str]:
+    await _get_required_project(project_id)
+    background_tasks.add_task(orch_create_issue_from_prompt, project_id, req.prompt)
+    return {"status": "creating"}
 
 
 @router.post("/projects/{project_id}/review-pr")

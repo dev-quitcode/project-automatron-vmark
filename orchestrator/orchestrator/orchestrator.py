@@ -651,23 +651,42 @@ class GitHubOrchestrator:
     # ── Stage 3: Sync issue/PR status from GitHub ─────────────────────────────
 
     async def sync_issues(self) -> None:
-        """Poll GitHub for issue/PR state and update the local DB."""
+        """Poll GitHub for issue/PR state and update the local DB; import new issues."""
         project = await self._project()
         owner = project.get("github_repo_owner")
         repo = project.get("github_repo_name")
         if not owner or not repo:
             return
 
-        local_issues = await list_github_issues(self.project_id)
-        if not local_issues:
-            return
-
-        issue_map = {i["issue_number"]: i for i in local_issues}
-
-        # Fetch current state of all tracked issues from GitHub
+        # Fetch all issues from GitHub (open + closed)
         gh_issues = await self.gh.list_issues(owner, repo, state="all")
         gh_map = {i["number"]: i for i in gh_issues}
 
+        local_issues = await list_github_issues(self.project_id)
+        issue_map = {i["issue_number"]: i for i in local_issues}
+
+        # Import any GitHub issue not yet tracked in Automatron
+        for number, gh in gh_map.items():
+            if number not in issue_map:
+                # Derive epic from first label, fall back to "General"
+                labels = [lbl["name"] for lbl in gh.get("labels") or []]
+                epic = labels[0] if labels else "General"
+                await create_github_issue(
+                    str(uuid.uuid4()),
+                    self.project_id,
+                    number,
+                    gh["title"],
+                    epic=epic,
+                    copilot_workspace_url=gh["html_url"],
+                )
+                issue_map[number] = {
+                    "issue_number": number,
+                    "title": gh["title"],
+                    "status": "open" if gh["state"] == "open" else "closed",
+                    "pr_number": None,
+                }
+
+        # Update status of all tracked issues
         for number, local in issue_map.items():
             gh = gh_map.get(number)
             if not gh:
@@ -1079,6 +1098,137 @@ async def assign_to_copilot_issue(project_id: str, issue_number: int) -> dict:
     await orch.gh.trigger_copilot_agent(owner, repo, issue_number)
     await orch._log(f"Copilot assigned to #{issue_number}", f"{owner}/{repo}", "SUCCESS")
     return {"assigned": 1, "issue_number": issue_number}
+
+
+async def implement_with_aider(project_id: str, issue_number: int) -> None:
+    """Clone the repo, run Aider on the issue, push a branch, open a PR."""
+    from orchestrator.aider_agent import implement_issue
+    from orchestrator.models.project import update_github_issue_pr
+
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        await orch._log(f"Aider #{issue_number}: no repo configured", "", "ERROR")
+        return
+
+    # Read issue from GitHub
+    issue_data = await orch.gh.get_issue(owner, repo, issue_number)
+    if not issue_data:
+        await orch._log(f"Aider #{issue_number}: issue not found", "", "ERROR")
+        return
+
+    issue_title = issue_data.get("title", f"Issue #{issue_number}")
+    issue_body = issue_data.get("body", "")
+    default_branch = project.get("default_branch") or "main"
+
+    llm_cfg = await orch._llm_config()
+    model = llm_cfg.get("builder", {}).get("model", "claude-opus-4-5")
+    # Strip provider prefix if present (aider adds claude/ itself)
+    model = model.replace("claude/", "").replace("anthropic/", "")
+
+    await orch._log(f"Aider starting on #{issue_number}", issue_title, "RUNNING")
+
+    branch = await implement_issue(
+        project_id=project_id,
+        owner=owner,
+        repo=repo,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        default_branch=default_branch,
+        model=model,
+    )
+
+    if not branch:
+        await orch._log(f"Aider #{issue_number}: implementation failed", "", "ERROR")
+        await emit_error(project_id, f"Aider failed to implement issue #{issue_number}")
+        return
+
+    # Open PR
+    pr_title = f"fix: implement #{issue_number} {issue_title}"
+    pr_body = f"Closes #{issue_number}\n\nImplemented by Aider + Claude ({model})."
+    try:
+        pr = await orch.gh.create_pull_request(
+            owner, repo,
+            title=pr_title,
+            body=pr_body,
+            head=branch,
+            base=default_branch,
+        )
+        pr_number = pr["number"]
+        pr_url = pr["html_url"]
+        await orch._log(f"Aider #{issue_number}: PR opened", f"PR #{pr_number}", "SUCCESS")
+
+        # Update issue in DB
+        from orchestrator.models.project import update_github_issue_pr, list_github_issues
+        await update_github_issue_pr(project_id, issue_number, pr_number, pr_url, status="pr_open")
+        updated_issues = await list_github_issues(project_id)
+        await emit_issues_updated(project_id, updated_issues)
+    except Exception as exc:
+        await orch._log(f"Aider #{issue_number}: PR creation failed", str(exc), "ERROR")
+        await emit_error(project_id, f"Aider: PR failed for #{issue_number}: {exc}")
+
+
+async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
+    """Use the architect LLM to turn a free-text prompt into a structured GitHub issue."""
+    from orchestrator.models.project import create_github_issue, list_github_issues
+
+    orch = GitHubOrchestrator(project_id)
+    project = await orch._project()
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        await orch._log("create_issue: no repo configured", "", "ERROR")
+        return
+
+    await orch._log("Creating issue from prompt", prompt[:120], "RUNNING")
+
+    llm_cfg = await orch._llm_config()
+    arch_model = llm_cfg["architect"]["model"]
+
+    stack_summary = await _build_stack_summary(orch.gh, owner, repo)
+
+    prompt_tpl = _load_prompt("issue_from_prompt_v1.txt")
+    user_msg = prompt_tpl.format(prompt=prompt, stack_context=stack_summary or "(not available)")
+
+    raw = await call_llm(
+        [
+            SystemMessage(content="You are a senior software engineer. Output only valid JSON, no markdown fences."),
+            HumanMessage(content=user_msg),
+        ],
+        model=arch_model,
+        max_tokens=2000,
+        trace_context={**orch._trace_ctx, "actor": "architect"},
+    )
+
+    try:
+        spec = json.loads(raw.strip())
+    except Exception:
+        await orch._log("create_issue: LLM returned invalid JSON", raw[:300], "ERROR")
+        return
+
+    title = spec.get("title", prompt[:80])
+    epic = spec.get("epic") or "General"
+    body = _render_issue_body(spec, epic, "", stack_summary)
+
+    gh_issue = await orch.gh.create_issue(owner, repo, title=title, body=body)
+    issue_number = gh_issue["number"]
+    html_url = gh_issue["html_url"]
+
+    await create_github_issue(
+        str(uuid.uuid4()),
+        project_id,
+        issue_number,
+        title,
+        epic=epic,
+        copilot_workspace_url=html_url,
+    )
+
+    updated_issues = await list_github_issues(project_id)
+    await emit_issues_updated(project_id, updated_issues)
+    await orch._log(f"Issue #{issue_number} created", title, "SUCCESS")
 
 
 async def review_pr(project_id: str, issue_number: int, pr_number: int) -> None:
