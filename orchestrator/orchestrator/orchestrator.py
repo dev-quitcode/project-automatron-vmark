@@ -651,23 +651,42 @@ class GitHubOrchestrator:
     # ── Stage 3: Sync issue/PR status from GitHub ─────────────────────────────
 
     async def sync_issues(self) -> None:
-        """Poll GitHub for issue/PR state and update the local DB."""
+        """Poll GitHub for issue/PR state and update the local DB; import new issues."""
         project = await self._project()
         owner = project.get("github_repo_owner")
         repo = project.get("github_repo_name")
         if not owner or not repo:
             return
 
-        local_issues = await list_github_issues(self.project_id)
-        if not local_issues:
-            return
-
-        issue_map = {i["issue_number"]: i for i in local_issues}
-
-        # Fetch current state of all tracked issues from GitHub
+        # Fetch all issues from GitHub (open + closed)
         gh_issues = await self.gh.list_issues(owner, repo, state="all")
         gh_map = {i["number"]: i for i in gh_issues}
 
+        local_issues = await list_github_issues(self.project_id)
+        issue_map = {i["issue_number"]: i for i in local_issues}
+
+        # Import any GitHub issue not yet tracked in Automatron
+        for number, gh in gh_map.items():
+            if number not in issue_map:
+                # Derive epic from first label, fall back to "General"
+                labels = [lbl["name"] for lbl in gh.get("labels") or []]
+                epic = labels[0] if labels else "General"
+                await create_github_issue(
+                    str(uuid.uuid4()),
+                    self.project_id,
+                    number,
+                    gh["title"],
+                    epic=epic,
+                    copilot_workspace_url=gh["html_url"],
+                )
+                issue_map[number] = {
+                    "issue_number": number,
+                    "title": gh["title"],
+                    "status": "open" if gh["state"] == "open" else "closed",
+                    "pr_number": None,
+                }
+
+        # Update status of all tracked issues
         for number, local in issue_map.items():
             gh = gh_map.get(number)
             if not gh:
