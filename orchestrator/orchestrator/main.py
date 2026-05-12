@@ -6,6 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+logging.getLogger("orchestrator").setLevel(logging.INFO)
+
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
