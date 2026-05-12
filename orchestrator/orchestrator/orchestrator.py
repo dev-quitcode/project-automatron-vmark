@@ -1103,7 +1103,7 @@ async def assign_to_copilot_issue(project_id: str, issue_number: int) -> dict:
 async def implement_with_aider(project_id: str, issue_number: int) -> None:
     """Clone the repo, run Aider on the issue, push a branch, open a PR."""
     from orchestrator.aider_agent import implement_issue
-    from orchestrator.models.project import get_github_issue, update_github_issue_pr
+    from orchestrator.models.project import update_github_issue_pr
 
     orch = GitHubOrchestrator(project_id)
     project = await orch._project()
