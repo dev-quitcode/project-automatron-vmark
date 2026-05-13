@@ -23,6 +23,19 @@ services:
       - WORKSPACE_BASE_PATH=/var/automatron/workspaces
       - GOLDEN_IMAGE=automatron/golden:latest
       - DEBUG=true
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_OWNER_TYPE=${GITHUB_OWNER_TYPE:-user}
+      - GITHUB_DEFAULT_ORG=${GITHUB_DEFAULT_ORG}
+      - GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
+      - GITHUB_REPO_VISIBILITY=${GITHUB_REPO_VISIBILITY:-private}
+      - GITHUB_ENVIRONMENT_NAME=${GITHUB_ENVIRONMENT_NAME:-production}
+      - GITHUB_ACTIONS_CI_WORKFLOW_NAME=${GITHUB_ACTIONS_CI_WORKFLOW_NAME:-CI}
+      - GITHUB_ACTIONS_DEPLOY_WORKFLOW_NAME=${GITHUB_ACTIONS_DEPLOY_WORKFLOW_NAME:-Deploy}
+      - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-Automatron Bot}
+      - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-automatron@example.local}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - AUTOMATRON_PUBLIC_URL=${AUTOMATRON_PUBLIC_URL}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

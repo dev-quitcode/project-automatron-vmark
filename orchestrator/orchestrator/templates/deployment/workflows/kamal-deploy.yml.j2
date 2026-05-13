@@ -70,22 +70,48 @@ jobs:
           ROLLBACK_TO: {% raw %}${{ inputs.rollback_to }}{% endraw %}
         run: |
           set -euo pipefail
-          case "$ACTION" in
-            setup)
-              kamal setup
-              ;;
-            deploy)
-              kamal deploy
-              ;;
-            rollback)
-              if [ -z "$ROLLBACK_TO" ]; then
-                echo "rollback_to input is required for rollback action" >&2
-                exit 1
-              fi
-              kamal rollback "$ROLLBACK_TO"
-              ;;
-            *)
-              echo "Unknown action: $ACTION" >&2
-              exit 1
-              ;;
-          esac
+          run_kamal() {
+            case "$ACTION" in
+              setup)
+                kamal setup
+                ;;
+              deploy)
+                kamal deploy
+                ;;
+              rollback)
+                if [ -z "$ROLLBACK_TO" ]; then
+                  echo "rollback_to input is required for rollback action" >&2
+                  return 1
+                fi
+                kamal rollback "$ROLLBACK_TO"
+                ;;
+              *)
+                echo "Unknown action: $ACTION" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          # Retry transient SSH/network failures for setup/deploy.
+          # Rollback remains single-attempt to avoid repeated destructive actions.
+          max_attempts=2
+          delay_seconds=20
+          if [ "$ACTION" = "rollback" ]; then
+            max_attempts=1
+          fi
+
+          attempt=1
+          while true; do
+            echo "Kamal action '$ACTION' attempt $attempt/$max_attempts"
+            if run_kamal; then
+              break
+            fi
+            rc=$?
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Kamal action failed after $attempt attempt(s)" >&2
+              exit "$rc"
+            fi
+            attempt=$((attempt + 1))
+            echo "Kamal action failed with exit code $rc, retrying in ${delay_seconds}s..."
+            sleep "$delay_seconds"
+          done

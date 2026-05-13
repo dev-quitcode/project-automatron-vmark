@@ -230,10 +230,18 @@ class KamalDeploymentStrategy(DeploymentStrategy):
         return HEALTH_ROUTE_CANDIDATES
 
     def _template_context(self, profile: DeploymentProfile) -> dict[str, Any]:
+        image = (profile.image or "").strip()
+        registry = (profile.registry or "").strip().rstrip("/")
+        prefix = f"{registry}/" if registry else ""
+        kamal_image = image
+        if prefix and image.lower().startswith(prefix.lower()):
+            kamal_image = image[len(prefix):]
+
         return {
             **profile.to_dict(),
             "templates_version": TEMPLATES_VERSION,
             "kamal_version": profile.kamal_version or self._kamal_version,
+            "kamal_image": kamal_image,
         }
 
     def _stack_checks(self, profile: DeploymentProfile) -> list[PreflightCheck]:

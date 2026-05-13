@@ -58,6 +58,7 @@ open http://localhost:3000
 - [Implementation Plan](IMPLEMENTATION_PLAN.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Deployment](docs/DEPLOYMENT.md)
+- [Deployment v2 Kamal E2E](docs/DEPLOYMENT_V2_KAMAL_E2E.md)
 
 ## License
 

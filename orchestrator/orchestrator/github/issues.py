@@ -66,7 +66,10 @@ class GitHubClient:
         # Check if the file already exists (need its SHA to update)
         sha: str | None = None
         async with self._client() as client:
-            check = await client.get(f"/repos/{owner}/{repo}/contents/{path}")
+            check = await client.get(
+                f"/repos/{owner}/{repo}/contents/{path}",
+                params={"ref": branch},
+            )
             if check.status_code == 200:
                 sha = check.json().get("sha")
 
@@ -191,6 +194,37 @@ class GitHubClient:
     async def get_issue(self, owner: str, repo: str, number: int) -> dict[str, Any]:
         async with self._client() as client:
             response = await client.get(f"/repos/{owner}/{repo}/issues/{number}")
+            response.raise_for_status()
+            return response.json()
+
+    async def update_issue(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        state: str | None = None,
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        if state is not None:
+            payload["state"] = state
+        if labels is not None:
+            payload["labels"] = labels
+        if not payload:
+            return await self.get_issue(owner, repo, issue_number)
+
+        async with self._client(timeout=30.0) as client:
+            response = await client.patch(
+                f"/repos/{owner}/{repo}/issues/{issue_number}",
+                json=payload,
+            )
             response.raise_for_status()
             return response.json()
 

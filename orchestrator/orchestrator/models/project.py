@@ -57,6 +57,9 @@ PROJECT_COLUMN_DEFS: dict[str, str] = {
     "auto_deploy_on_main": "INTEGER NOT NULL DEFAULT 0",
     "artifacts_push_mode": "TEXT NOT NULL DEFAULT 'pr'",
     "automatron_deploy_run_id": "TEXT",
+    "deploy_audit_issue_number": "INTEGER",
+    "deploy_audit_issue_url": "TEXT",
+    "deploy_audit_gate_status": "TEXT NOT NULL DEFAULT 'missing'",
     "github_environment_name": "TEXT NOT NULL DEFAULT 'production'",
     "last_workflow_sync_at": "TEXT",
     "plan_approved": "INTEGER NOT NULL DEFAULT 0",
@@ -160,6 +163,9 @@ def _serialize_project_row(row: aiosqlite.Row) -> dict[str, Any]:
         fingerprint=project.get("deploy_artifacts_fingerprint") or {},
         auto_deploy_on_main=bool(project.get("auto_deploy_on_main")),
         artifacts_push_mode=project.get("artifacts_push_mode") or "pr",
+        deploy_audit_issue_number=project.get("deploy_audit_issue_number"),
+        deploy_audit_issue_url=project.get("deploy_audit_issue_url"),
+        deploy_audit_gate_status=project.get("deploy_audit_gate_status") or "missing",
     )
     project["stack_config"] = project.get("stack_config_json") or {}
     project["llm_config"] = normalize_llm_config(project.get("llm_config_json") or {})
@@ -198,6 +204,9 @@ def _summarize_deploy_target(
     fingerprint: dict[str, Any] | None = None,
     auto_deploy_on_main: bool = False,
     artifacts_push_mode: str = "pr",
+    deploy_audit_issue_number: int | None = None,
+    deploy_audit_issue_url: str | None = None,
+    deploy_audit_gate_status: str = "missing",
 ) -> dict[str, Any] | None:
     if not target and not strategy:
         return None
@@ -222,6 +231,9 @@ def _summarize_deploy_target(
             "auto_deploy_on_main": bool(auto_deploy_on_main),
             "artifacts_push_mode": artifacts_push_mode,
             "fingerprint": fingerprint or None,
+            "deploy_audit_issue_number": deploy_audit_issue_number,
+            "deploy_audit_issue_url": deploy_audit_issue_url,
+            "deploy_audit_gate_status": deploy_audit_gate_status,
         }
 
     return {
@@ -234,6 +246,9 @@ def _summarize_deploy_target(
         "app_url": redacted.get("app_url"),
         "health_path": redacted.get("health_path") or "/api/health",
         "secret_names": list(secret_names or []),
+        "deploy_audit_issue_number": deploy_audit_issue_number,
+        "deploy_audit_issue_url": deploy_audit_issue_url,
+        "deploy_audit_gate_status": deploy_audit_gate_status,
     }
 
 
@@ -308,6 +323,9 @@ async def init_db(db_path: str) -> None:
                 auto_deploy_on_main INTEGER NOT NULL DEFAULT 0,
                 artifacts_push_mode TEXT NOT NULL DEFAULT 'pr',
                 automatron_deploy_run_id TEXT,
+                deploy_audit_issue_number INTEGER,
+                deploy_audit_issue_url TEXT,
+                deploy_audit_gate_status TEXT NOT NULL DEFAULT 'missing',
                 github_environment_name TEXT NOT NULL DEFAULT 'production',
                 last_workflow_sync_at TEXT,
                 plan_approved INTEGER NOT NULL DEFAULT 0,
@@ -643,6 +661,9 @@ async def update_project_deployment(
     auto_deploy_on_main: bool | None = None,
     artifacts_push_mode: str | None = None,
     automatron_deploy_run_id: str | None = None,
+    deploy_audit_issue_number: int | None = None,
+    deploy_audit_issue_url: str | None = None,
+    deploy_audit_gate_status: str | None = None,
 ) -> None:
     """Update deployment_v2-specific columns. Never accepts secret values."""
     kwargs: dict[str, Any] = {}
@@ -660,6 +681,12 @@ async def update_project_deployment(
         kwargs["artifacts_push_mode"] = artifacts_push_mode
     if automatron_deploy_run_id is not None:
         kwargs["automatron_deploy_run_id"] = automatron_deploy_run_id
+    if deploy_audit_issue_number is not None:
+        kwargs["deploy_audit_issue_number"] = int(deploy_audit_issue_number)
+    if deploy_audit_issue_url is not None:
+        kwargs["deploy_audit_issue_url"] = deploy_audit_issue_url
+    if deploy_audit_gate_status is not None:
+        kwargs["deploy_audit_gate_status"] = deploy_audit_gate_status
     if kwargs:
         await update_project(project_id, **kwargs)
 

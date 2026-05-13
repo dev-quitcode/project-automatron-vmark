@@ -2,7 +2,12 @@
 # Do not edit by hand. Re-run "Generate artifacts" in Automatron to update.
 
 service: {{ service_name }}
-image: {{ image }}
+image: {{ kamal_image }}
+
+builder:
+  arch:
+    - amd64
+    - arm64
 
 servers:
   web:
@@ -17,6 +22,9 @@ registry:
 ssh:
   user: {{ ssh_user }}
   port: {{ ssh_port }}
+
+sshkit:
+  pool_idle_timeout: 1800
 
 proxy:
   ssl: true

@@ -601,4 +601,18 @@ jobs:
         }
 
     def _repo_path(self, repo_name: str) -> str:
-        return f"/repos/{settings.github_owner}/{repo_name}"
+        repo = (repo_name or "").strip()
+        if not repo:
+            raise RuntimeError("repo_name is required for GitHub Actions management")
+        if "/" in repo:
+            owner, name = repo.split("/", 1)
+            owner = owner.strip()
+            name = name.strip()
+            if not owner or not name:
+                raise RuntimeError(f"Invalid repo_name format: {repo_name!r}")
+            return f"/repos/{owner}/{name}"
+        if not settings.github_owner:
+            raise RuntimeError(
+                "GITHUB_OWNER is required when repo_name does not include owner"
+            )
+        return f"/repos/{settings.github_owner}/{repo}"

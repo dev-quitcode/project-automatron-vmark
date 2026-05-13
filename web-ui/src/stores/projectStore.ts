@@ -406,17 +406,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   updateDeployTarget: async (projectId, target) => {
     try {
       await api.updateDeployTarget(projectId, target);
+      const config = target.config;
       get().patchProject(projectId, {
         deploy_status: "configured",
         deploy_target_summary: {
-          auth_mode: target.auth_mode,
-          host: target.host,
-          port: target.port ?? 22,
-          user: target.user,
-          deploy_path: target.deploy_path,
-          auth_reference: target.auth_reference ?? null,
-          app_url: target.app_url ?? null,
-          health_path: target.health_path ?? null,
+          strategy: "kamal",
+          host: config.host,
+          ssh_user: config.ssh_user,
+          ssh_port: config.ssh_port ?? 22,
+          domain: config.domain,
+          container_port: config.container_port ?? 3000,
+          health_path: config.health_path ?? "/api/health",
+          registry: config.registry ?? "ghcr.io",
+          registry_username: config.registry_username,
+          image: config.image ?? null,
+          clear_env_keys: Object.keys(config.clear_env ?? {}),
+          secret_names: config.secret_env_names ?? [],
+          auto_deploy_on_main: config.auto_deploy_on_main ?? false,
+          artifacts_push_mode: config.artifacts_push_mode ?? "pr",
         },
       });
     } catch (error: any) {

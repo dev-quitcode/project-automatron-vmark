@@ -76,6 +76,9 @@ export interface DeployTargetSummary {
   auto_deploy_on_main?: boolean;
   artifacts_push_mode?: ArtifactsPushMode;
   fingerprint?: ArtifactFingerprint | null;
+  deploy_audit_issue_number?: number | null;
+  deploy_audit_issue_url?: string | null;
+  deploy_audit_gate_status?: "missing" | "pending" | "ready" | string;
   // Legacy SSH fields (present when strategy === "legacy")
   auth_mode?: "legacy_unsupported" | DeployAuthMode | null;
   port?: number | null;
@@ -132,6 +135,9 @@ export interface Project {
   deployment_profile?: Record<string, unknown>;
   deployment_secret_names?: string[];
   deploy_artifacts_fingerprint?: ArtifactFingerprint | Record<string, never>;
+  deploy_audit_issue_number?: number | null;
+  deploy_audit_issue_url?: string | null;
+  deploy_audit_gate_status?: "missing" | "pending" | "ready" | string;
   auto_deploy_on_main?: boolean;
   artifacts_push_mode?: ArtifactsPushMode;
   automatron_deploy_run_id?: string | null;
@@ -342,4 +348,12 @@ export interface DeployArtifactsResponse {
   status: "generated";
   project_id: string;
   fingerprint: ArtifactFingerprint;
+  deploy_audit_issue: DeployAuditIssue | null;
+}
+
+export interface DeployAuditIssue {
+  number: number;
+  url: string | null;
+  state: "open" | "closed" | string;
+  gate_status: "missing" | "pending" | "ready" | string;
 }

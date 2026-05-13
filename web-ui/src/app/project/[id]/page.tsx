@@ -848,6 +848,25 @@ export default function ProjectPage() {
                   <span className="text-muted-foreground">Health</span>
                   <span>{currentProject.deploy_target_summary?.health_path || "/api/health"}</span>
                 </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">Deploy Audit Gate</span>
+                  <span>
+                    {currentProject.deploy_target_summary?.deploy_audit_gate_status || "missing"}
+                  </span>
+                </div>
+                {currentProject.deploy_target_summary?.deploy_audit_issue_url && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Deploy Audit Issue</span>
+                    <a
+                      href={currentProject.deploy_target_summary.deploy_audit_issue_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate text-right text-primary hover:underline"
+                    >
+                      #{currentProject.deploy_target_summary.deploy_audit_issue_number}
+                    </a>
+                  </div>
+                )}
               </div>
             </div>
 

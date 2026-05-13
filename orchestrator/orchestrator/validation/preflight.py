@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+import httpx
+
 from orchestrator.config import settings
+from orchestrator.github.issues import GitHubClient
 from orchestrator.llm.catalog import get_provider_model_catalog
 from orchestrator.llm.configuration import default_llm_config, normalize_llm_config, provider_api_key
 from orchestrator.repository.manager import RepositoryManager
@@ -71,6 +74,8 @@ class PreflightService:
         strategy_name = (project.get("deployment_strategy") or "").strip()
         checks: list[PreflightCheck] = []
         checks.extend(self._github_configuration_checks())
+        if phase in {"setup", "deploy"}:
+            checks.append(await self._deploy_audit_gate_check(project))
 
         if not strategy_name:
             checks.append(
@@ -104,6 +109,70 @@ class PreflightService:
             ok=not blocking,
             blocking=blocking,
             checks=checks,
+        )
+
+    async def _deploy_audit_gate_check(self, project: dict[str, Any]) -> PreflightCheck:
+        owner = (project.get("github_repo_owner") or "").strip()
+        repo = (project.get("github_repo_name") or "").strip()
+        issue_number = project.get("deploy_audit_issue_number")
+        issue_url = project.get("deploy_audit_issue_url")
+
+        if not owner or not repo:
+            return _blocking(
+                "deploy_audit_issue_missing",
+                "Deploy audit issue gate cannot be evaluated: repository is not configured",
+                details={"state": "missing"},
+            )
+        if not issue_number:
+            return _blocking(
+                "deploy_audit_issue_missing",
+                "Deploy audit issue gate is missing. Generate deploy artifacts first.",
+                details={"state": "missing", "issue_number": None, "issue_url": None},
+            )
+
+        gh = GitHubClient()
+        try:
+            issue = await gh.get_issue(owner, repo, int(issue_number))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return _blocking(
+                    "deploy_audit_issue_missing",
+                    "Deploy audit issue was not found on GitHub. Regenerate deploy artifacts.",
+                    details={
+                        "state": "missing",
+                        "issue_number": int(issue_number),
+                        "issue_url": issue_url,
+                    },
+                )
+            return _blocking(
+                "deploy_audit_issue_unknown",
+                "Failed to read deploy audit issue state from GitHub",
+                details={
+                    "issue_number": int(issue_number),
+                    "issue_url": issue_url,
+                    "error": str(exc),
+                },
+            )
+
+        state = (issue.get("state") or "").lower()
+        if state == "closed":
+            return _ok(
+                "deploy_audit_gate",
+                "Deploy audit issue is closed; setup/deploy gate is satisfied",
+                details={
+                    "state": state,
+                    "issue_number": int(issue.get("number") or issue_number),
+                    "issue_url": issue.get("html_url") or issue_url,
+                },
+            )
+        return _blocking(
+            "deploy_audit_issue_open",
+            "Deploy audit issue is still open. Close it after readiness verification before setup/deploy.",
+            details={
+                "state": state or "open",
+                "issue_number": int(issue.get("number") or issue_number),
+                "issue_url": issue.get("html_url") or issue_url,
+            },
         )
 
     def normalize_deploy_target(self, deploy_target: dict[str, Any] | None) -> dict[str, Any]:

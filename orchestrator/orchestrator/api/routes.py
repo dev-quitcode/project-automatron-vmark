@@ -181,6 +181,17 @@ class ProjectResponse(BaseModel):
     github_environment_name: str | None
     last_workflow_sync_at: str | None
     deploy_target_summary: dict[str, Any] | None
+    deployment_strategy: str = ""
+    deployment_profile: dict[str, Any] = Field(default_factory=dict)
+    deployment_secret_names: list[str] = Field(default_factory=list)
+    deploy_artifacts_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    deploy_audit_issue_number: int | None = None
+    deploy_audit_issue_url: str | None = None
+    deploy_audit_gate_status: str | None = None
+    auto_deploy_on_main: bool = False
+    artifacts_push_mode: str = "pr"
+    automatron_deploy_run_id: str | None = None
+    last_deploy_run_id: str | None = None
     plan_approved: bool = False
     preview_approved: bool = False
     active_task_id: str | None = None
@@ -432,7 +443,9 @@ async def api_update_deploy_target(project_id: str, req: DeployTargetRequest) ->
     contains only the secret names.
     """
     project = await _get_required_project(project_id)
-    repo_name = project.get("repo_name") or project.get("github_repo_name")
+    repo_owner = (project.get("github_repo_owner") or "").strip()
+    repo_short = (project.get("repo_name") or project.get("github_repo_name") or "").strip()
+    repo_name = f"{repo_owner}/{repo_short}" if repo_owner and repo_short else repo_short
     if not repo_name:
         raise HTTPException(status_code=409, detail="Project has no GitHub repo configured")
 
@@ -503,11 +516,12 @@ async def api_generate_deploy_artifacts(
     req: GenerateArtifactsRequest | None = None,
 ) -> dict[str, Any]:
     await _get_required_project(project_id)
-    fingerprint = await orch_generate_deploy_artifacts(project_id)
+    result = await orch_generate_deploy_artifacts(project_id)
     return {
         "status": "generated",
         "project_id": project_id,
-        "fingerprint": fingerprint,
+        "fingerprint": result.get("fingerprint") or {},
+        "deploy_audit_issue": result.get("deploy_audit_issue") or None,
     }
 
 
@@ -520,14 +534,52 @@ async def api_deploy_preflight(project_id: str, req: DeployPreflightRequest) -> 
 @router.post("/projects/{project_id}/deploy")
 async def api_deploy(project_id: str, req: DeployRequest | None = None) -> dict[str, Any]:
     await _get_required_project(project_id)
-    result = await orch_deploy(project_id, action="deploy")
+    try:
+        result = await orch_deploy(project_id, action="deploy")
+    except RuntimeError as exc:
+        if str(exc) in {"deploy_audit_issue_missing", "deploy_audit_issue_open"}:
+            project = await _get_required_project(project_id)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": str(exc),
+                    "message": (
+                        "Deploy audit issue is missing. Generate deploy artifacts first."
+                        if str(exc) == "deploy_audit_issue_missing"
+                        else "Deploy audit issue is still open. Close it before deploy."
+                    ),
+                    "issue_number": project.get("deploy_audit_issue_number"),
+                    "issue_url": project.get("deploy_audit_issue_url"),
+                    "state": project.get("deploy_audit_gate_status") or "missing",
+                },
+            )
+        raise
     return {"status": "dispatched", "project_id": project_id, **result}
 
 
 @router.post("/projects/{project_id}/setup")
 async def api_setup(project_id: str, req: DeployRequest | None = None) -> dict[str, Any]:
     await _get_required_project(project_id)
-    result = await orch_deploy(project_id, action="setup")
+    try:
+        result = await orch_deploy(project_id, action="setup")
+    except RuntimeError as exc:
+        if str(exc) in {"deploy_audit_issue_missing", "deploy_audit_issue_open"}:
+            project = await _get_required_project(project_id)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": str(exc),
+                    "message": (
+                        "Deploy audit issue is missing. Generate deploy artifacts first."
+                        if str(exc) == "deploy_audit_issue_missing"
+                        else "Deploy audit issue is still open. Close it before setup."
+                    ),
+                    "issue_number": project.get("deploy_audit_issue_number"),
+                    "issue_url": project.get("deploy_audit_issue_url"),
+                    "state": project.get("deploy_audit_gate_status") or "missing",
+                },
+            )
+        raise
     return {"status": "dispatched", "project_id": project_id, **result}
 
 
@@ -564,7 +616,9 @@ _LOG_REDACT_PATTERN = re.compile(
 @router.get("/projects/{project_id}/deploy-logs")
 async def api_deploy_logs(project_id: str) -> Response:
     project = await _get_required_project(project_id)
-    repo_name = project.get("repo_name") or project.get("github_repo_name")
+    repo_owner = (project.get("github_repo_owner") or "").strip()
+    repo_short = (project.get("repo_name") or project.get("github_repo_name") or "").strip()
+    repo_name = f"{repo_owner}/{repo_short}" if repo_owner and repo_short else repo_short
     run_id = project.get("last_deploy_run_id")
     if not repo_name or not run_id:
         raise HTTPException(status_code=404, detail="No deploy run available")

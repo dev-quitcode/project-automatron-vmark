@@ -107,12 +107,16 @@ def test_render_artifacts_standalone_output():
 
     dockerfile = files["Dockerfile"]
     assert "node:22-alpine" in dockerfile
+    assert "COPY . ." in dockerfile
+    assert "npm prune --omit=dev" in dockerfile
     assert "node\", \"server.js" in dockerfile  # standalone path
 
     deploy_yml = files["config/deploy.yml"]
     assert "service:" in deploy_yml
+    assert "image: owner/repo" in deploy_yml
     assert "ssl: true" in deploy_yml
     assert "app_port: 3000" in deploy_yml
+    assert "- arm64" in deploy_yml
     assert "ghcr.io" in deploy_yml
     assert "DATABASE_URL" in deploy_yml
 
@@ -133,6 +137,8 @@ def test_render_artifacts_default_output_uses_npm_start():
     files = strategy.render_artifacts(profile)
     dockerfile = files["Dockerfile"]
     assert "npm\", \"start" in dockerfile
+    assert "RUN npm ci --omit=dev" not in dockerfile
+    assert "COPY --from=builder /app/node_modules ./node_modules" in dockerfile
 
 
 def test_workflow_files_render_correlation_input():

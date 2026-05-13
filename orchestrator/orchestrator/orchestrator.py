@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from orchestrator.api.websocket import (
@@ -41,6 +42,8 @@ from orchestrator.observability import trace_event
 logger = logging.getLogger(__name__)
 
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts"
+_DEPLOY_AUDIT_ISSUE_TITLE = "chore: deploy readiness audit (Automatron)"
+_DEPLOY_AUDIT_LABEL = "deploy-audit"
 
 
 def _load_prompt(name: str) -> str:
@@ -990,6 +993,200 @@ async def _fetch_detector_files(project: dict[str, Any], strategy: Any) -> dict[
     return files
 
 
+def _build_deploy_audit_issue_body(
+    project: dict[str, Any],
+    profile: Any,
+    fingerprint: dict[str, Any],
+) -> str:
+    secret_names = list(project.get("deployment_secret_names") or [])
+    stack = {
+        "framework": getattr(profile, "framework", "unknown"),
+        "package_manager": getattr(profile, "package_manager", "unknown"),
+        "router_style": getattr(profile, "router_style", "unknown"),
+        "next_output": getattr(profile, "next_output", "unknown"),
+    }
+    profile_summary = {
+        "strategy": getattr(profile, "strategy", "kamal"),
+        "host": getattr(profile, "host", ""),
+        "domain": getattr(profile, "domain", ""),
+        "ssh_user": getattr(profile, "ssh_user", ""),
+        "ssh_port": getattr(profile, "ssh_port", 22),
+        "container_port": getattr(profile, "container_port", 3000),
+        "health_path": getattr(profile, "health_path", "/api/health"),
+        "registry": getattr(profile, "registry", "ghcr.io"),
+        "registry_username": getattr(profile, "registry_username", ""),
+        "image": getattr(profile, "image", ""),
+        "artifacts_push_mode": getattr(profile, "artifacts_push_mode", "pr"),
+        "auto_deploy_on_main": bool(getattr(profile, "auto_deploy_on_main", False)),
+    }
+
+    return (
+        "## Deploy Readiness Audit\n\n"
+        "Automatron generated deterministic deployment artifacts. "
+        "Validate readiness for production deploy and adapt to repository specifics.\n\n"
+        "### Context\n"
+        f"- Project: `{project.get('name')}`\n"
+        f"- Repository: `{project.get('github_repo_owner')}/{project.get('github_repo_name')}`\n\n"
+        "### Stack detection summary\n"
+        f"```json\n{json.dumps(stack, indent=2)}\n```\n\n"
+        "### Deployment profile (safe fields)\n"
+        f"```json\n{json.dumps(profile_summary, indent=2)}\n```\n\n"
+        "### Deployment secrets (names only)\n"
+        f"```json\n{json.dumps(secret_names, indent=2)}\n```\n\n"
+        "### Artifact fingerprint\n"
+        f"```json\n{json.dumps(fingerprint, indent=2)}\n```\n\n"
+        "### Strict checklist\n"
+        "- [ ] Health endpoint exists and matches configured `health_path`\n"
+        "- [ ] Startup command/CMD is correct for production runtime\n"
+        "- [ ] Required env vars are documented; secret names are complete\n"
+        "- [ ] Domain/host/port config is internally consistent\n"
+        "- [ ] Dockerfile and Kamal config align with stack specifics\n"
+        "- [ ] Deploy workflow inputs and action paths are valid\n"
+        "- [ ] Rollback preconditions and image tag strategy are valid\n\n"
+        "### Agent instructions\n"
+        "1. Identify all readiness gaps blocking high-quality deploy.\n"
+        "2. If fixes are needed, open PR(s) with concrete changes.\n"
+        "3. Keep this issue open until readiness is confirmed.\n"
+        "4. Close this issue only when deploy readiness is fully confirmed.\n"
+    )
+
+
+async def _read_deploy_audit_issue_state(project: dict[str, Any]) -> dict[str, Any]:
+    owner = (project.get("github_repo_owner") or "").strip()
+    repo = (project.get("github_repo_name") or "").strip()
+    issue_number = project.get("deploy_audit_issue_number")
+    issue_url = project.get("deploy_audit_issue_url")
+
+    if not owner or not repo:
+        return {
+            "ok": False,
+            "code": "deploy_audit_issue_missing",
+            "gate_status": "missing",
+            "state": "missing",
+            "issue_number": issue_number,
+            "issue_url": issue_url,
+            "message": "Project has no GitHub repo configured",
+        }
+    if not issue_number:
+        return {
+            "ok": False,
+            "code": "deploy_audit_issue_missing",
+            "gate_status": "missing",
+            "state": "missing",
+            "issue_number": None,
+            "issue_url": None,
+            "message": "Deploy audit issue is not created yet",
+        }
+
+    gh = GitHubClient()
+    try:
+        issue = await gh.get_issue(owner, repo, int(issue_number))
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return {
+                "ok": False,
+                "code": "deploy_audit_issue_missing",
+                "gate_status": "missing",
+                "state": "missing",
+                "issue_number": int(issue_number),
+                "issue_url": issue_url,
+                "message": "Deploy audit issue no longer exists on GitHub",
+            }
+        raise
+
+    state = (issue.get("state") or "").lower()
+    gate_status = "ready" if state == "closed" else "pending"
+    return {
+        "ok": state == "closed",
+        "code": None if state == "closed" else "deploy_audit_issue_open",
+        "gate_status": gate_status,
+        "state": state or "unknown",
+        "issue_number": int(issue.get("number") or issue_number),
+        "issue_url": issue.get("html_url") or issue_url,
+        "message": (
+            "Deploy audit issue is closed and gate is satisfied"
+            if state == "closed"
+            else "Deploy audit issue is still open"
+        ),
+    }
+
+
+async def _upsert_deploy_audit_issue(
+    *,
+    project_id: str,
+    project: dict[str, Any],
+    profile: Any,
+    fingerprint: dict[str, Any],
+) -> dict[str, Any]:
+    from orchestrator.models.project import update_project_deployment
+
+    owner = (project.get("github_repo_owner") or "").strip()
+    repo = (project.get("github_repo_name") or "").strip()
+    if not owner or not repo:
+        raise RuntimeError("Project has no GitHub repo configured")
+
+    gh = GitHubClient()
+    await gh.ensure_label(owner, repo, _DEPLOY_AUDIT_LABEL, color="1d76db")
+    body = _build_deploy_audit_issue_body(project, profile, fingerprint)
+    issue_number = project.get("deploy_audit_issue_number")
+    issue: dict[str, Any] | None = None
+
+    if issue_number:
+        try:
+            candidate = await gh.get_issue(owner, repo, int(issue_number))
+            if (candidate.get("state") or "").lower() == "open":
+                issue = await gh.update_issue(
+                    owner,
+                    repo,
+                    int(issue_number),
+                    title=_DEPLOY_AUDIT_ISSUE_TITLE,
+                    body=body,
+                    labels=[_DEPLOY_AUDIT_LABEL],
+                )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+
+    if issue is None:
+        issue = await gh.create_issue(
+            owner,
+            repo,
+            title=_DEPLOY_AUDIT_ISSUE_TITLE,
+            body=body,
+            labels=[_DEPLOY_AUDIT_LABEL],
+        )
+
+    state = (issue.get("state") or "open").lower()
+    gate_status = "ready" if state == "closed" else "pending"
+    issue_number = int(issue.get("number"))
+    issue_url = issue.get("html_url")
+
+    await update_project_deployment(
+        project_id,
+        deploy_audit_issue_number=issue_number,
+        deploy_audit_issue_url=issue_url,
+        deploy_audit_gate_status=gate_status,
+    )
+
+    try:
+        await gh.trigger_copilot_agent(owner, repo, issue_number)
+    except Exception as exc:  # pragma: no cover - network/provider variance
+        logger.warning(
+            "Failed to auto-assign Copilot for deploy audit issue #%s in %s/%s: %s",
+            issue_number,
+            owner,
+            repo,
+            exc,
+        )
+
+    return {
+        "number": issue_number,
+        "url": issue_url,
+        "state": state,
+        "gate_status": gate_status,
+    }
+
+
 async def orch_generate_deploy_artifacts(project_id: str) -> dict[str, Any]:
     """Render and push deployment artifacts to the child repo."""
     from orchestrator.deployment_v2 import get_strategy
@@ -1029,12 +1226,22 @@ async def orch_generate_deploy_artifacts(project_id: str) -> dict[str, Any]:
         mode=profile.artifacts_push_mode,
     )
 
+    fingerprint_dict = fingerprint.to_dict()
     await update_project_deployment(
         project_id,
-        deploy_artifacts_fingerprint=fingerprint.to_dict(),
+        deploy_artifacts_fingerprint=fingerprint_dict,
+    )
+    deploy_audit_issue = await _upsert_deploy_audit_issue(
+        project_id=project_id,
+        project=project,
+        profile=profile,
+        fingerprint=fingerprint_dict,
     )
     await update_project(project_id, project_stage="deployment_artifacts_generated")
-    return fingerprint.to_dict()
+    return {
+        "fingerprint": fingerprint_dict,
+        "deploy_audit_issue": deploy_audit_issue,
+    }
 
 
 async def orch_deploy(
@@ -1063,6 +1270,17 @@ async def orch_deploy(
     if action == "rollback" and not _has_previous_successful_deploy(project):
         raise RuntimeError("rollback_no_previous_deploy")
 
+    if action in {"setup", "deploy"}:
+        gate = await _read_deploy_audit_issue_state(project)
+        await update_project_deployment(
+            project_id,
+            deploy_audit_issue_number=gate.get("issue_number"),
+            deploy_audit_issue_url=gate.get("issue_url"),
+            deploy_audit_gate_status=gate.get("gate_status") or "missing",
+        )
+        if not gate.get("ok"):
+            raise RuntimeError(str(gate.get("code") or "deploy_audit_issue_open"))
+
     strategy_name = (project.get("deployment_strategy") or "").strip()
     if strategy_name != "kamal":
         raise RuntimeError("Project is not configured for Kamal deployment")
@@ -1080,7 +1298,9 @@ async def orch_deploy(
         rollback_to=rollback_to,
     )
 
-    repo_name = project.get("repo_name") or project.get("github_repo_name") or ""
+    repo_owner = (project.get("github_repo_owner") or "").strip()
+    repo_short = (project.get("repo_name") or project.get("github_repo_name") or "").strip()
+    repo_name = f"{repo_owner}/{repo_short}" if repo_owner and repo_short else repo_short
     if not repo_name:
         raise RuntimeError("Project has no repo_name")
 
@@ -1140,7 +1360,9 @@ async def orch_sync_deploy(project_id: str) -> dict[str, Any]:
     if not project:
         raise RuntimeError(f"Project not found: {project_id}")
 
-    repo_name = project.get("repo_name") or project.get("github_repo_name") or ""
+    repo_owner = (project.get("github_repo_owner") or "").strip()
+    repo_short = (project.get("repo_name") or project.get("github_repo_name") or "").strip()
+    repo_name = f"{repo_owner}/{repo_short}" if repo_owner and repo_short else repo_short
     run_id = project.get("last_deploy_run_id")
     if not repo_name or not run_id:
         return {"status": "not_configured"}
