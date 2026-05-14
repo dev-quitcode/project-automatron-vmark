@@ -362,8 +362,36 @@ class GitHubOrchestrator:
 
         # Read repo context
         readme = await self.gh.read_file(owner, repo, "README.md") or ""
-        prd = await self.gh.read_file(owner, repo, "docs/PRD.md") or ""
-        extra_context = f"\n\n---\n\n{prd}" if prd else ""
+
+        # Auto-discover docs/ — read any .md files directly in docs/ and one level deep
+        docs_content = ""
+        docs_files_read: list[str] = []
+        docs_entries = await self.gh.list_directory(owner, repo, "docs")
+        for entry in docs_entries:
+            if entry.get("type") == "file" and entry["name"].endswith(".md"):
+                text = await self.gh.read_file(owner, repo, entry["path"]) or ""
+                if text:
+                    docs_content += f"\n\n---\n## {entry['name']}\n\n{text[:8000]}"
+                    docs_files_read.append(entry["path"])
+            elif entry.get("type") == "dir":
+                sub_entries = await self.gh.list_directory(owner, repo, entry["path"])
+                for sub in sub_entries:
+                    if sub.get("type") == "file" and sub["name"].endswith(".md"):
+                        text = await self.gh.read_file(owner, repo, sub["path"]) or ""
+                        if text:
+                            docs_content += f"\n\n---\n## {sub['path']}\n\n{text[:4000]}"
+                            docs_files_read.append(sub["path"])
+                    elif sub.get("type") == "dir":
+                        # One more level (e.g. docs/user-stories/E-001/)
+                        deep_entries = await self.gh.list_directory(owner, repo, sub["path"])
+                        for deep in deep_entries:
+                            if deep.get("type") == "file" and deep["name"].endswith(".md"):
+                                text = await self.gh.read_file(owner, repo, deep["path"]) or ""
+                                if text:
+                                    docs_content += f"\n\n---\n## {deep['path']}\n\n{text[:2000]}"
+                                    docs_files_read.append(deep["path"])
+
+        extra_context = docs_content
 
         # Read stack files so the LLM knows exact libraries, components, and patterns
         pkg_json = await self.gh.read_file(owner, repo, "package.json") or ""
@@ -385,8 +413,7 @@ class GitHubOrchestrator:
         context_parts = []
         if readme:
             context_parts.append("README.md")
-        if prd:
-            context_parts.append("docs/PRD.md")
+        context_parts.extend(docs_files_read)
         if pkg_json:
             context_parts.append("package.json")
         if tw_config:

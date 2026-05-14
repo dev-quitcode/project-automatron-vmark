@@ -53,6 +53,16 @@ class GitHubClient:
             encoded = data.get("content", "")
             return base64.b64decode(encoded).decode("utf-8")
 
+    async def list_directory(self, owner: str, repo: str, path: str) -> list[dict[str, Any]]:
+        """Return directory entries (name, path, type) or empty list if not found."""
+        async with self._client() as client:
+            response = await client.get(f"/repos/{owner}/{repo}/contents/{path}")
+            if response.status_code == 404:
+                return []
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, list) else []
+
     async def push_file(
         self,
         owner: str,
