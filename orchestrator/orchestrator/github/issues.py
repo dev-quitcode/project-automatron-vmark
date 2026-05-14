@@ -36,6 +36,7 @@ class GitHubClient:
             base_url=self._base_url,
             headers=self._headers(),
             timeout=timeout,
+            follow_redirects=True,
         )
 
     # ── Repository files ─────────────────────────────────────────────────────
@@ -55,8 +56,10 @@ class GitHubClient:
 
     async def list_directory(self, owner: str, repo: str, path: str) -> list[dict[str, Any]]:
         """Return directory entries (name, path, type) or empty list if not found."""
+        clean_path = path.rstrip("/")
+        url = f"/repos/{owner}/{repo}/contents/{clean_path}" if clean_path else f"/repos/{owner}/{repo}/contents"
         async with self._client() as client:
-            response = await client.get(f"/repos/{owner}/{repo}/contents/{path}")
+            response = await client.get(url)
             if response.status_code == 404:
                 return []
             response.raise_for_status()

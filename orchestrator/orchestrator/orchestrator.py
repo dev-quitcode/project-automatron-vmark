@@ -363,10 +363,18 @@ class GitHubOrchestrator:
         # Read repo context
         readme = await self.gh.read_file(owner, repo, "README.md") or ""
 
-        # Auto-discover docs/ — read any .md files directly in docs/ and one level deep
+        # Auto-discover docs — scan root + docs/ folder, read all .md files up to 3 levels deep
         docs_content = ""
         docs_files_read: list[str] = []
+        root_entries = await self.gh.list_directory(owner, repo, "")
         docs_entries = await self.gh.list_directory(owner, repo, "docs")
+        # Root-level .md files (excluding README, already captured above)
+        for entry in root_entries:
+            if entry.get("type") == "file" and entry["name"].endswith(".md") and entry["name"] != "README.md":
+                text = await self.gh.read_file(owner, repo, entry["path"]) or ""
+                if text:
+                    docs_content += f"\n\n---\n## {entry['name']}\n\n{text[:8000]}"
+                    docs_files_read.append(entry["path"])
         for entry in docs_entries:
             if entry.get("type") == "file" and entry["name"].endswith(".md"):
                 text = await self.gh.read_file(owner, repo, entry["path"]) or ""
