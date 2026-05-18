@@ -1158,12 +1158,26 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
     issue_body = issue_data.get("body", "")
     default_branch = project.get("default_branch") or "main"
 
+    # Append previous review feedback so Aider knows what to fix
+    from orchestrator.models.project import _get_github_issue
+    local_issue = await _get_github_issue(project_id, issue_number)
+    existing_pr_number = local_issue.get("pr_number") if local_issue else None
+    review = (local_issue.get("pr_review") or {}) if local_issue else {}
+    if review.get("summary"):
+        issue_body += (
+            f"\n\n---\n## Previous AI Review Feedback\n\n"
+            f"{'PASSED' if review.get('passed') else 'FAILED'}\n\n"
+            f"{review['summary']}\n\n"
+            f"Address all issues listed above in your implementation."
+        )
+
     llm_cfg = await orch._llm_config()
     model = llm_cfg.get("builder", {}).get("model", "claude-opus-4-5")
     # Strip provider prefix if present (aider adds claude/ itself)
     model = model.replace("claude/", "").replace("anthropic/", "")
 
-    await orch._log(f"Aider starting on #{issue_number}", issue_title, "RUNNING")
+    action = "re-implementing" if existing_pr_number else "starting"
+    await orch._log(f"Aider {action} on #{issue_number}", issue_title, "RUNNING")
 
     branch = await implement_issue(
         project_id=project_id,
@@ -1181,7 +1195,19 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         await emit_error(project_id, f"Aider failed to implement issue #{issue_number}")
         return
 
-    # Open PR
+    from orchestrator.models.project import update_github_issue_pr, list_github_issues
+
+    # If a PR already exists on this branch, just reset the review status
+    if existing_pr_number:
+        existing_pr = await orch.gh.find_pr_for_issue(owner, repo, issue_number)
+        pr_url = existing_pr["html_url"] if existing_pr else (local_issue or {}).get("pr_url") or ""
+        await orch._log(f"Aider #{issue_number}: pushed update to existing PR #{existing_pr_number}", f"PR #{existing_pr_number}", "SUCCESS")
+        await update_github_issue_pr(project_id, issue_number, existing_pr_number, pr_url, status="pr_open", pr_review=None)
+        updated_issues = await list_github_issues(project_id)
+        await emit_issues_updated(project_id, updated_issues)
+        return
+
+    # Open a new PR
     pr_title = f"fix: implement #{issue_number} {issue_title}"
     pr_body = f"Closes #{issue_number}\n\nImplemented by Aider + Claude ({model})."
     try:
@@ -1196,8 +1222,6 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         pr_url = pr["html_url"]
         await orch._log(f"Aider #{issue_number}: PR opened", f"PR #{pr_number}", "SUCCESS")
 
-        # Update issue in DB
-        from orchestrator.models.project import update_github_issue_pr, list_github_issues
         await update_github_issue_pr(project_id, issue_number, pr_number, pr_url, status="pr_open")
         updated_issues = await list_github_issues(project_id)
         await emit_issues_updated(project_id, updated_issues)
