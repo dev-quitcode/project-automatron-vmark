@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import shutil
 from pathlib import Path
 
 from orchestrator.config import settings
@@ -32,6 +34,34 @@ async def _run(
     except asyncio.TimeoutError:
         proc.kill()
         return 1, f"Command timed out after {timeout}s"
+
+
+def _extract_file_paths(text: str) -> list[str]:
+    """Pull file paths out of an issue body (backtick-quoted or plain path patterns)."""
+    # Match paths in backticks: `src/lib/foo.ts`
+    backtick = re.findall(r'`([A-Za-z_\-\.][A-Za-z0-9_\-\./]*\.[A-Za-z0-9]{1,10})`', text)
+    # Match bare paths like src/lib/foo.ts (must contain / or be a known root file)
+    root_files = re.findall(
+        r'\b((?:src|app|lib|components|pages|hooks|utils|types|styles|config|public)'
+        r'(?:/[A-Za-z0-9_\-\.]+)+\.[A-Za-z0-9]{1,10})\b',
+        text,
+    )
+    # Well-known root config files
+    config_files = re.findall(
+        r'\b((?:package|tsconfig|tailwind\.config|next\.config|postcss\.config|'
+        r'\.env(?:\.local)?|eslint\.config|prettier\.config|vite\.config|'
+        r'vitest\.config|jest\.config)'
+        r'(?:\.[a-z]{1,5})?)\b',
+        text,
+    )
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in (*backtick, *root_files, *config_files):
+        p = p.strip()
+        if p and p not in seen and len(p) < 120:
+            seen.add(p)
+            result.append(p)
+    return result[:30]  # cap at 30 files
 
 
 async def implement_issue(
@@ -76,20 +106,26 @@ async def implement_issue(
     branch = f"aider/fix-{issue_number}"
     await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
 
-    # Detect empty/minimal repo so we can tell Aider to create files from scratch
-    existing_files = list(repo_dir.rglob("*"))
-    non_git_files = [f for f in existing_files if ".git" not in f.parts and f.is_file()]
-    is_empty_repo = len(non_git_files) <= 2  # only .gitignore / README at most
+    # Detect empty/minimal repo
+    non_git_files = [
+        f for f in repo_dir.rglob("*")
+        if ".git" not in f.parts and f.is_file() and f.name != ".aider.gitignore"
+    ]
+    is_empty_repo = len(non_git_files) <= 2
+
+    # Extract file paths from the issue so Aider has explicit targets
+    file_paths = _extract_file_paths(issue_body)
+    logger.info("Aider: extracted %d file targets from issue body: %s", len(file_paths), file_paths)
 
     scratch_note = (
         "\n\nIMPORTANT: This repository is new and mostly empty. "
-        "You must CREATE all necessary files from scratch. "
-        "Do not assume any framework files exist. Write complete file contents."
+        "You MUST CREATE all necessary files from scratch. "
+        "Do not assume any framework files exist. "
+        "Write the complete content of every file listed above."
         if is_empty_repo
         else ""
     )
 
-    # Build the task prompt
     task = (
         f"# Task: {issue_title}\n\n"
         f"{issue_body}\n\n"
@@ -98,14 +134,11 @@ async def implement_issue(
         f"file you create or modify.{scratch_note}"
     )
 
-    # Inherit env and inject API key
     env = {**os.environ}
     if settings.anthropic_api_key:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
     if settings.github_token:
         env["GITHUB_TOKEN"] = settings.github_token
-
-    import shutil
 
     aider_args = [
         "--model", model,
@@ -119,6 +152,10 @@ async def implement_issue(
         "--auto-commits",
     ]
 
+    # Pass extracted file paths so Aider creates/edits them directly
+    for fp in file_paths:
+        aider_args.extend(["--file", fp])
+
     if shutil.which("aider"):
         aider_cmd = ["aider", *aider_args]
     elif shutil.which("uvx"):
@@ -131,23 +168,32 @@ async def implement_issue(
 
     logger.info("Aider: running on issue #%d (%s)", issue_number, issue_title)
     rc, out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
-    logger.info("Aider output (rc=%d):\n%s", rc, out[-3000:])
+    logger.info("Aider output (rc=%d):\n%s", rc, out[-4000:])
 
-    # Check something was committed
+    # Check something meaningful was committed (not just .gitignore housekeeping)
     rc_log, log_out = await _run(
         ["git", "log", f"origin/{default_branch}..HEAD", "--oneline"],
         cwd=repo_dir,
     )
-    if not log_out.strip():
-        logger.warning("Aider: no commits made for issue #%d", issue_number)
-        # Still push in case aider made changes but didn't commit — force commit
+    committed_files_rc, committed_files = await _run(
+        ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
+        cwd=repo_dir,
+    )
+    meaningful_files = [
+        f for f in committed_files.splitlines()
+        if f.strip() and f.strip() not in (".gitignore", ".aider.gitignore")
+    ]
+
+    if not meaningful_files:
+        logger.warning("Aider: no meaningful files committed for issue #%d — forcing add", issue_number)
         await _run(["git", "add", "-A"], cwd=repo_dir)
-        rc_commit, _ = await _run(
+        rc_commit, commit_out = await _run(
             ["git", "commit", "-m", f"fix: implement #{issue_number} {issue_title}"],
             cwd=repo_dir,
         )
+        logger.info("Force commit rc=%d: %s", rc_commit, commit_out[:500])
         if rc_commit != 0:
-            logger.error("Aider: nothing to commit for issue #%d", issue_number)
+            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, out[-2000:])
             return None
 
     # Push branch

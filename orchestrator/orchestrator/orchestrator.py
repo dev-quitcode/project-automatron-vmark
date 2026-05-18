@@ -1172,9 +1172,9 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         )
 
     llm_cfg = await orch._llm_config()
-    model = llm_cfg.get("builder", {}).get("model", "claude-opus-4-5")
-    # Strip provider prefix if present (aider adds claude/ itself)
-    model = model.replace("claude/", "").replace("anthropic/", "")
+    model = llm_cfg.get("builder", {}).get("model", "anthropic/claude-sonnet-4-6")
+    # Remove internal claude/ prefix if present; keep anthropic/ for LiteLLM routing
+    model = model.replace("claude/", "")
 
     action = "re-implementing" if existing_pr_number else "starting"
     await orch._log(f"Aider {action} on #{issue_number}", issue_title, "RUNNING")
