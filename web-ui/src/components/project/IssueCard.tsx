@@ -142,9 +142,18 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
               </button>
             )}
 
+            {/* Re-implement with Aider after review failure */}
+            {vs === "pr_reviewed_fail" && (
+              <button onClick={() => onImplementAider(issue.issue_number)} disabled={isImplementing || isReviewing}
+                className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/10 transition-colors disabled:opacity-50">
+                {isImplementing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
+                {isImplementing ? "Re-implementing…" : "Re-implement"}
+              </button>
+            )}
+
             {/* Re-review after suggestions */}
             {vs === "pr_reviewed_fail" && issue.pr_number && (
-              <button onClick={() => onReview(issue.issue_number, issue.pr_number!)} disabled={isReviewing}
+              <button onClick={() => onReview(issue.issue_number, issue.pr_number!)} disabled={isReviewing || isImplementing}
                 className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-xs font-medium text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50">
                 {isReviewing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
                 Re-review
