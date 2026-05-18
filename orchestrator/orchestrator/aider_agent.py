@@ -76,8 +76,27 @@ async def implement_issue(
     branch = f"aider/fix-{issue_number}"
     await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
 
+    # Detect empty/minimal repo so we can tell Aider to create files from scratch
+    existing_files = list(repo_dir.rglob("*"))
+    non_git_files = [f for f in existing_files if ".git" not in f.parts and f.is_file()]
+    is_empty_repo = len(non_git_files) <= 2  # only .gitignore / README at most
+
+    scratch_note = (
+        "\n\nIMPORTANT: This repository is new and mostly empty. "
+        "You must CREATE all necessary files from scratch. "
+        "Do not assume any framework files exist. Write complete file contents."
+        if is_empty_repo
+        else ""
+    )
+
     # Build the task prompt
-    task = f"# Task: {issue_title}\n\n{issue_body}\n\nImplement the task described above. Follow all implementation notes and acceptance criteria exactly."
+    task = (
+        f"# Task: {issue_title}\n\n"
+        f"{issue_body}\n\n"
+        f"Implement the task described above. Follow all implementation notes and "
+        f"acceptance criteria exactly. Write complete, working file contents for every "
+        f"file you create or modify.{scratch_note}"
+    )
 
     # Inherit env and inject API key
     env = {**os.environ}
@@ -89,12 +108,13 @@ async def implement_issue(
     import shutil
 
     aider_args = [
-        "--model", f"claude/{model}",
+        "--model", model,
         "--message", task,
         "--yes",
         "--no-pretty",
         "--no-check-update",
         "--no-show-model-warnings",
+        "--edit-format", "whole",
         "--git",
         "--auto-commits",
     ]
