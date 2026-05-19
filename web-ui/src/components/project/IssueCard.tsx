@@ -20,6 +20,7 @@ interface IssueCardProps {
 
 type VisualState =
   | "open"
+  | "implementing"
   | "pr_open"
   | "pr_reviewed_pass"
   | "pr_reviewed_fail"
@@ -29,6 +30,7 @@ type VisualState =
 function toVisualState(issue: GithubIssue): VisualState {
   if (issue.status === "merged") return "merged";
   if (issue.status === "closed") return "closed";
+  if (issue.status === "implementing") return "implementing";
   if (issue.status === "pr_reviewed") {
     return issue.pr_review?.passed ? "pr_reviewed_pass" : "pr_reviewed_fail";
   }
@@ -42,12 +44,13 @@ const STATE_META: Record<VisualState, {
   labelColor: string;
   rowBg?: string;
 }> = {
-  open:               { dot: "bg-muted-foreground/30", label: "Open",           labelColor: "text-muted-foreground" },
-  pr_open:            { dot: "bg-blue-400",             label: "PR Ready",       labelColor: "text-blue-400",    rowBg: "bg-blue-500/5" },
-  pr_reviewed_pass:   { dot: "bg-green-400",            label: "Review Passed",  labelColor: "text-green-400",   rowBg: "bg-green-500/5" },
-  pr_reviewed_fail:   { dot: "bg-amber-400",            label: "Changes Needed", labelColor: "text-amber-400",   rowBg: "bg-amber-500/5" },
-  merged:             { dot: "bg-purple-400",           label: "Merged",         labelColor: "text-purple-400" },
-  closed:             { dot: "bg-muted-foreground/30",  label: "Closed",         labelColor: "text-muted-foreground" },
+  open:               { dot: "bg-muted-foreground/30",        label: "Open",           labelColor: "text-muted-foreground" },
+  implementing:       { dot: "bg-violet-400 animate-pulse",   label: "Working…",       labelColor: "text-violet-400",  rowBg: "bg-violet-500/5" },
+  pr_open:            { dot: "bg-blue-400",                   label: "PR Ready",       labelColor: "text-blue-400",    rowBg: "bg-blue-500/5" },
+  pr_reviewed_pass:   { dot: "bg-green-400",                  label: "Review Passed",  labelColor: "text-green-400",   rowBg: "bg-green-500/5" },
+  pr_reviewed_fail:   { dot: "bg-amber-400",                  label: "Changes Needed", labelColor: "text-amber-400",   rowBg: "bg-amber-500/5" },
+  merged:             { dot: "bg-purple-400",                 label: "Merged",         labelColor: "text-purple-400" },
+  closed:             { dot: "bg-muted-foreground/30",        label: "Closed",         labelColor: "text-muted-foreground" },
 };
 
 function timeAgo(iso: string): string {
@@ -115,6 +118,13 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
               </a>
             )}
 
+            {/* Working — Aider running (persisted via DB status) */}
+            {vs === "implementing" && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-violet-400">
+                <Loader2 className="h-3 w-3 animate-spin" /> Working…
+              </span>
+            )}
+
             {/* Assign Copilot — open, no PR */}
             {vs === "open" && (
               <button onClick={() => onAssignCopilot(issue.issue_number)} disabled={isAssigning || isImplementing}
@@ -129,7 +139,7 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
               <button onClick={() => onImplementAider(issue.issue_number)} disabled={isImplementing || isAssigning}
                 className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/10 transition-colors disabled:opacity-50">
                 {isImplementing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
-                {isImplementing ? "Implementing…" : "Implement"}
+                {isImplementing ? "Working…" : "Implement"}
               </button>
             )}
 
@@ -147,7 +157,7 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
               <button onClick={() => onImplementAider(issue.issue_number)} disabled={isImplementing || isReviewing}
                 className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/10 transition-colors disabled:opacity-50">
                 {isImplementing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
-                {isImplementing ? "Re-implementing…" : "Re-implement"}
+                {isImplementing ? "Working…" : "Re-implement"}
               </button>
             )}
 

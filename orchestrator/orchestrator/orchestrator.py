@@ -1182,8 +1182,14 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         logger.warning("Aider: unrecognized or unconfigured model %r — falling back to claude-sonnet-4-6", model)
         model = "anthropic/claude-sonnet-4-6"
 
-    action = "re-implementing" if existing_pr_number else "starting"
+    is_reimplementation = bool(existing_pr_number)
+    action = "re-implementing" if is_reimplementation else "starting"
     await orch._log(f"Aider {action} on #{issue_number}", issue_title, "RUNNING")
+
+    # Set "implementing" status immediately so the UI shows "Working…" while Aider runs
+    from orchestrator.models.project import update_github_issue_status, list_github_issues as _list_issues
+    await update_github_issue_status(project_id, issue_number, "implementing")
+    await emit_issues_updated(project_id, await _list_issues(project_id))
 
     branch = await implement_issue(
         project_id=project_id,
@@ -1194,11 +1200,16 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
         issue_body=issue_body,
         default_branch=default_branch,
         model=model,
+        is_reimplementation=is_reimplementation,
     )
 
     if not branch:
         await orch._log(f"Aider #{issue_number}: implementation failed", "", "ERROR")
         await emit_error(project_id, f"Aider failed to implement issue #{issue_number}")
+        # Revert status back to open so user can retry
+        revert_status = "pr_reviewed" if is_reimplementation else "open"
+        await update_github_issue_status(project_id, issue_number, revert_status)
+        await emit_issues_updated(project_id, await _list_issues(project_id))
         return
 
     from orchestrator.models.project import update_github_issue_pr, list_github_issues

@@ -37,13 +37,19 @@ async def _run(
 
 
 def _extract_file_paths(text: str) -> list[str]:
-    """Pull file paths out of an issue body (backtick-quoted or plain path patterns)."""
-    # Match paths in backticks: `src/lib/foo.ts`
-    backtick = re.findall(r'`([A-Za-z_\-\.][A-Za-z0-9_\-\./]*\.[A-Za-z0-9]{1,10})`', text)
-    # Match bare paths like src/lib/foo.ts (must contain / or be a known root file)
+    """Pull file paths out of an issue body (backtick-quoted or plain path patterns).
+
+    Supports parentheses in path segments (e.g. Next.js route groups like
+    src/app/(authenticated)/settings/users/page.tsx).
+    """
+    # Match paths in backticks — allow parens for Next.js route groups
+    backtick = re.findall(
+        r'`([A-Za-z_\-\.][A-Za-z0-9_\-\./\(\)]*\.[A-Za-z0-9]{1,10})`', text
+    )
+    # Match bare paths like src/lib/foo.ts (must contain known root segment)
     root_files = re.findall(
         r'\b((?:src|app|lib|components|pages|hooks|utils|types|styles|config|public)'
-        r'(?:/[A-Za-z0-9_\-\.]+)+\.[A-Za-z0-9]{1,10})\b',
+        r'(?:/[A-Za-z0-9_\-\.\(\)]+)+\.[A-Za-z0-9]{1,10})\b',
         text,
     )
     # Well-known root config files
@@ -61,7 +67,7 @@ def _extract_file_paths(text: str) -> list[str]:
         if p and p not in seen and len(p) < 120:
             seen.add(p)
             result.append(p)
-    return result[:30]  # cap at 30 files
+    return result[:30]
 
 
 async def implement_issue(
@@ -72,10 +78,14 @@ async def implement_issue(
     issue_title: str,
     issue_body: str,
     default_branch: str = "main",
-    model: str = "claude-opus-4-5",
+    model: str = "anthropic/claude-sonnet-4-6",
+    is_reimplementation: bool = False,
 ) -> str | None:
     """
     Clone/pull the repo, run Aider on the issue, push a branch.
+
+    For re-implementation (is_reimplementation=True), continues from the existing
+    aider/fix-{issue_number} branch using diff format to patch rather than rewrite.
     Returns the branch name on success, None on failure.
     """
     workspace = settings.workspace_base_dir / str(project_id)
@@ -89,22 +99,40 @@ async def implement_issue(
         else f"https://github.com/{owner}/{repo}.git"
     )
 
-    # Clone or sync to latest default branch
+    branch = f"aider/fix-{issue_number}"
+
+    # Clone or sync repo
     if (repo_dir / ".git").exists():
         logger.info("Aider: syncing %s/%s", owner, repo)
         await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)
         await _run(["git", "fetch", "origin"], cwd=repo_dir, timeout=60)
-        await _run(["git", "checkout", default_branch], cwd=repo_dir)
-        await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
     else:
         logger.info("Aider: cloning %s/%s", owner, repo)
         rc, out = await _run(["git", "clone", authed_url, str(repo_dir)], timeout=120)
         if rc != 0:
             logger.error("Aider: clone failed:\n%s", out)
             return None
+        await _run(["git", "fetch", "origin"], cwd=repo_dir, timeout=60)
 
-    branch = f"aider/fix-{issue_number}"
-    await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
+    # Check if the aider branch already exists on the remote
+    rc_check, _ = await _run(
+        ["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
+        cwd=repo_dir,
+    )
+    remote_branch_exists = rc_check == 0
+
+    if is_reimplementation and remote_branch_exists:
+        # Continue from existing branch — preserves all working code
+        logger.info("Aider: re-implementing on existing branch %s", branch)
+        await _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir)
+        edit_format = "diff"
+    else:
+        # Fresh start from default branch
+        logger.info("Aider: fresh implementation from %s", default_branch)
+        await _run(["git", "checkout", default_branch], cwd=repo_dir)
+        await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
+        await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
+        edit_format = "whole"
 
     # Detect empty/minimal repo
     non_git_files = [
@@ -115,14 +143,22 @@ async def implement_issue(
 
     # Extract file paths from the issue so Aider has explicit targets
     file_paths = _extract_file_paths(issue_body)
-    logger.info("Aider: extracted %d file targets from issue body: %s", len(file_paths), file_paths)
+    logger.info("Aider: extracted %d file targets: %s", len(file_paths), file_paths)
 
     scratch_note = (
         "\n\nIMPORTANT: This repository is new and mostly empty. "
         "You MUST CREATE all necessary files from scratch. "
         "Do not assume any framework files exist. "
         "Write the complete content of every file listed above."
-        if is_empty_repo
+        if is_empty_repo and not is_reimplementation
+        else ""
+    )
+
+    reimpl_note = (
+        "\n\nIMPORTANT: This is a RE-IMPLEMENTATION pass. The existing code is on this branch. "
+        "Do NOT rewrite working files — only fix the specific issues listed in the review feedback above. "
+        "Make targeted, minimal changes."
+        if is_reimplementation
         else ""
     )
 
@@ -131,7 +167,7 @@ async def implement_issue(
         f"{issue_body}\n\n"
         f"Implement the task described above. Follow all implementation notes and "
         f"acceptance criteria exactly. Write complete, working file contents for every "
-        f"file you create or modify.{scratch_note}"
+        f"file you create or modify.{scratch_note}{reimpl_note}"
     )
 
     env = {**os.environ}
@@ -147,7 +183,7 @@ async def implement_issue(
         "--no-pretty",
         "--no-check-update",
         "--no-show-model-warnings",
-        "--edit-format", "whole",
+        "--edit-format", edit_format,
         "--git",
         "--auto-commits",
     ]
@@ -166,16 +202,12 @@ async def implement_issue(
         logger.error("Aider: no aider/uvx/uv binary found in PATH")
         return None
 
-    logger.info("Aider: running on issue #%d (%s)", issue_number, issue_title)
+    logger.info("Aider: running %s on issue #%d (%s)", edit_format, issue_number, issue_title)
     rc, out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
     logger.info("Aider output (rc=%d):\n%s", rc, out[-4000:])
 
     # Check something meaningful was committed (not just .gitignore housekeeping)
-    rc_log, log_out = await _run(
-        ["git", "log", f"origin/{default_branch}..HEAD", "--oneline"],
-        cwd=repo_dir,
-    )
-    committed_files_rc, committed_files = await _run(
+    _, committed_files = await _run(
         ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
         cwd=repo_dir,
     )
@@ -205,7 +237,7 @@ async def implement_issue(
             if f.strip() and f.strip() not in (".gitignore", ".aider.gitignore")
         ]
         if not meaningful_files:
-            logger.error("Aider: still no meaningful files after force commit for issue #%d", issue_number)
+            logger.error("Aider: still no meaningful files for issue #%d", issue_number)
             return None
 
     # Push branch
@@ -219,5 +251,5 @@ async def implement_issue(
         logger.error("Aider: push failed:\n%s", out)
         return None
 
-    logger.info("Aider: pushed branch %s for issue #%d", branch, issue_number)
+    logger.info("Aider: pushed branch %s for issue #%d (%s mode)", branch, issue_number, edit_format)
     return branch

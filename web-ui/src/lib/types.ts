@@ -94,7 +94,7 @@ export interface Project {
   updated_at: string;
 }
 
-export type IssueStatus = "open" | "pr_open" | "pr_reviewed" | "merged" | "closed";
+export type IssueStatus = "open" | "implementing" | "pr_open" | "pr_reviewed" | "merged" | "closed";
 
 export interface PRReview {
   passed: boolean;
