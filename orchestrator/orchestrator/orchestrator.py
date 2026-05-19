@@ -1191,7 +1191,7 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
     await update_github_issue_status(project_id, issue_number, "implementing")
     await emit_issues_updated(project_id, await _list_issues(project_id))
 
-    branch = await implement_issue(
+    branch, failure_reason = await implement_issue(
         project_id=project_id,
         owner=owner,
         repo=repo,
@@ -1204,8 +1204,9 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
     )
 
     if not branch:
-        await orch._log(f"Aider #{issue_number}: implementation failed", "", "ERROR")
-        await emit_error(project_id, f"Aider failed to implement issue #{issue_number}")
+        detail = failure_reason or "unknown error"
+        await orch._log(f"Aider #{issue_number}: implementation failed", detail, "ERROR")
+        await emit_error(project_id, f"Aider failed on #{issue_number}: {detail[:200]}")
         # Revert status back to open so user can retry
         revert_status = "pr_reviewed" if is_reimplementation else "open"
         await update_github_issue_status(project_id, issue_number, revert_status)

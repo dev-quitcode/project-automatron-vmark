@@ -100,13 +100,13 @@ async def implement_issue(
     default_branch: str = "main",
     model: str = "anthropic/claude-sonnet-4-6",
     is_reimplementation: bool = False,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """
     Clone/pull the repo, run Aider on the issue, push a branch.
 
     For re-implementation (is_reimplementation=True), continues from the existing
     aider/fix-{issue_number} branch using diff format to patch rather than rewrite.
-    Returns the branch name on success, None on failure.
+    Returns (branch_name, None) on success, (None, failure_reason) on failure.
     """
     workspace = settings.workspace_base_dir / str(project_id)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ async def implement_issue(
         rc, out = await _run(["git", "clone", authed_url, str(repo_dir)], timeout=120)
         if rc != 0:
             logger.error("Aider: clone failed:\n%s", out)
-            return None
+            return None, f"git clone failed: {out[-500:]}"
         await _run(["git", "fetch", "origin"], cwd=repo_dir, timeout=60)
 
     # For re-implementation: continue from the existing branch so files that were
@@ -227,11 +227,11 @@ async def implement_issue(
         aider_cmd = ["uv", "tool", "run", "aider-chat", *aider_args]
     else:
         logger.error("Aider: no aider/uvx/uv binary found in PATH")
-        return None
+        return None, "aider binary not found in PATH"
 
     logger.info("Aider: running %s on issue #%d (%s)", edit_format, issue_number, issue_title)
-    rc, out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
-    logger.info("Aider output (rc=%d):\n%s", rc, out[-4000:])
+    rc, aider_out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
+    logger.info("Aider output (rc=%d):\n%s", rc, aider_out[-4000:])
 
     # Check something meaningful was committed (not just .gitignore housekeeping)
     _, committed_files = await _run(
@@ -252,8 +252,9 @@ async def implement_issue(
         )
         logger.info("Force commit rc=%d: %s", rc_commit, commit_out[:500])
         if rc_commit != 0:
-            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, out[-2000:])
-            return None
+            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, aider_out[-2000:])
+            snippet = aider_out[-800:].strip() or "(no output)"
+            return None, f"Aider made no changes (rc={rc}).\n\n{snippet}"
         # Re-check after force commit
         _, committed_files2 = await _run(
             ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
@@ -265,18 +266,19 @@ async def implement_issue(
         ]
         if not meaningful_files:
             logger.error("Aider: still no meaningful files for issue #%d", issue_number)
-            return None
+            snippet = aider_out[-800:].strip() or "(no output)"
+            return None, f"Aider wrote no files (only housekeeping).\n\n{snippet}"
 
     # Push branch
     await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)
-    rc, out = await _run(
+    rc, push_out = await _run(
         ["git", "push", "-u", "origin", branch, "--force-with-lease"],
         cwd=repo_dir,
         timeout=60,
     )
     if rc != 0:
-        logger.error("Aider: push failed:\n%s", out)
-        return None
+        logger.error("Aider: push failed:\n%s", push_out)
+        return None, f"git push failed: {push_out[-500:]}"
 
     logger.info("Aider: pushed branch %s for issue #%d (%s mode)", branch, issue_number, edit_format)
-    return branch
+    return branch, None
