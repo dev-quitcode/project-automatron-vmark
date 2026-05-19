@@ -114,25 +114,13 @@ async def implement_issue(
             return None
         await _run(["git", "fetch", "origin"], cwd=repo_dir, timeout=60)
 
-    # Check if the aider branch already exists on the remote
-    rc_check, _ = await _run(
-        ["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
-        cwd=repo_dir,
-    )
-    remote_branch_exists = rc_check == 0
-
-    if is_reimplementation and remote_branch_exists:
-        # Continue from existing branch — preserves all working code
-        logger.info("Aider: re-implementing on existing branch %s", branch)
-        await _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir)
-        edit_format = "diff"
-    else:
-        # Fresh start from default branch
-        logger.info("Aider: fresh implementation from %s", default_branch)
-        await _run(["git", "checkout", default_branch], cwd=repo_dir)
-        await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
-        await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
-        edit_format = "whole"
+    # Always start from the default branch so stale wrong files from previous
+    # runs don't carry over. Review feedback in the prompt tells Aider what to fix.
+    logger.info("Aider: resetting to %s for issue #%d (reimpl=%s)", default_branch, issue_number, is_reimplementation)
+    await _run(["git", "checkout", default_branch], cwd=repo_dir)
+    await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
+    await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
+    edit_format = "whole"
 
     # Detect empty/minimal repo
     non_git_files = [
@@ -155,9 +143,9 @@ async def implement_issue(
     )
 
     reimpl_note = (
-        "\n\nIMPORTANT: This is a RE-IMPLEMENTATION pass. The existing code is on this branch. "
-        "Do NOT rewrite working files — only fix the specific issues listed in the review feedback above. "
-        "Make targeted, minimal changes."
+        "\n\nIMPORTANT: A previous attempt had errors described in the review feedback above. "
+        "This is a fresh start — write all files at the exact paths specified. "
+        "Pay close attention to the correct file paths."
         if is_reimplementation
         else ""
     )
