@@ -134,14 +134,22 @@ async def implement_issue(
             return None
         await _run(["git", "fetch", "origin"], cwd=repo_dir, timeout=60)
 
-    # Always start from the default branch so stale wrong files from previous
-    # runs don't carry over. Review feedback in the prompt tells Aider what to fix.
-    logger.info("Aider: resetting to %s for issue #%d (reimpl=%s)", default_branch, issue_number, is_reimplementation)
-    await _run(["git", "checkout", default_branch], cwd=repo_dir)
-    await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
-    await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
-    # diff format: outputs only changed lines, far smaller than whole-file output,
-    # handles special path chars (parentheses, brackets) correctly, no 0-byte placeholders
+    # For re-implementation: continue from the existing branch so files that were
+    # implemented correctly are still present. Aider patches only what the review flagged.
+    # For fresh implementation: reset to default_branch to avoid stale wrong files.
+    _, remote_branches = await _run(["git", "ls-remote", "--heads", "origin", branch], cwd=repo_dir)
+    branch_on_remote = branch in remote_branches
+
+    if is_reimplementation and branch_on_remote:
+        logger.info("Aider: continuing from existing branch %s for issue #%d", branch, issue_number)
+        await _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir)
+    else:
+        logger.info("Aider: resetting to %s for issue #%d", default_branch, issue_number)
+        await _run(["git", "checkout", default_branch], cwd=repo_dir)
+        await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
+        await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
+
+    # diff format: outputs only changed lines, handles special path chars correctly
     edit_format = "diff"
 
     # Detect empty/minimal repo
@@ -165,11 +173,16 @@ async def implement_issue(
     )
 
     reimpl_note = (
-        "\n\nIMPORTANT: A previous attempt had errors described in the review feedback above. "
-        "This is a fresh start — write all files at the exact paths specified. "
-        "Pay close attention to the correct file paths."
-        if is_reimplementation
-        else ""
+        "\n\nIMPORTANT: A previous attempt was reviewed and had the errors listed above. "
+        "The existing files on this branch are the previous attempt. "
+        "Fix ONLY the issues flagged in the review — do not rewrite files that were marked as correct."
+        if is_reimplementation and branch_on_remote
+        else (
+            "\n\nIMPORTANT: A previous attempt had errors described in the review feedback above. "
+            "Write all required files from scratch at the exact paths specified."
+            if is_reimplementation
+            else ""
+        )
     )
 
     task = (
