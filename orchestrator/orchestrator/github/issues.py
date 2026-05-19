@@ -244,6 +244,7 @@ class GitHubClient:
             base_url=self._base_url,
             headers={**self._headers(), "Accept": "application/vnd.github.diff"},
             timeout=30.0,
+            follow_redirects=True,
         ) as client:
             response = await client.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
             response.raise_for_status()
