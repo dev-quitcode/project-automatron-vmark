@@ -37,22 +37,36 @@ async def _run(
 
 
 def _extract_file_paths(text: str) -> list[str]:
-    """Pull file paths out of an issue body (backtick-quoted or plain path patterns).
+    """Pull file paths out of an issue body.
 
-    Supports parentheses in path segments (e.g. Next.js route groups like
-    src/app/(authenticated)/settings/users/page.tsx).
+    Supports:
+    - Route groups: src/app/(authenticated)/settings/page.tsx
+    - Dynamic segments: src/app/api/organizations/[id]/users/route.ts
+    Only returns paths that contain at least one '/' — bare filenames like
+    'page.tsx' are skipped to avoid creating stray root-level files.
     """
-    # Match paths in backticks — allow parens for Next.js route groups
-    backtick = re.findall(
-        r'`([A-Za-z_\-\.][A-Za-z0-9_\-\./\(\)]*\.[A-Za-z0-9]{1,10})`', text
-    )
-    # Match bare paths like src/lib/foo.ts (must contain known root segment)
+    # Segment: any dir name including (group) and [param] syntax
+    _seg = r'[A-Za-z0-9_\-\.\(\)\[\]]+'
+    _ext = r'[A-Za-z0-9]{1,10}'
+
+    # Backtick-quoted paths that contain at least one slash
+    backtick = re.findall(rf'`((?:{_seg}/)+{_seg}\.{_ext})`', text)
+
+    # Bare paths starting with a known root directory
     root_files = re.findall(
-        r'\b((?:src|app|lib|components|pages|hooks|utils|types|styles|config|public)'
-        r'(?:/[A-Za-z0-9_\-\.\(\)]+)+\.[A-Za-z0-9]{1,10})\b',
+        rf'\b((?:src|app|lib|components|pages|hooks|utils|types|styles|config|public|supabase)'
+        rf'(?:/{_seg})+\.{_ext})\b',
         text,
     )
-    # Well-known root config files
+
+    # Well-known root config files (no slash needed — these are real root files)
+    _ROOT_CONFIGS = {
+        "package.json", "tsconfig.json", ".env.local", ".env",
+        "tailwind.config.ts", "tailwind.config.js",
+        "next.config.ts", "next.config.js", "next.config.mjs",
+        "postcss.config.js", "postcss.config.mjs",
+        "eslint.config.js", "eslint.config.mjs",
+    }
     config_files = re.findall(
         r'\b((?:package|tsconfig|tailwind\.config|next\.config|postcss\.config|'
         r'\.env(?:\.local)?|eslint\.config|prettier\.config|vite\.config|'
@@ -60,11 +74,17 @@ def _extract_file_paths(text: str) -> list[str]:
         r'(?:\.[a-z]{1,5})?)\b',
         text,
     )
+
     seen: set[str] = set()
     result: list[str] = []
     for p in (*backtick, *root_files, *config_files):
         p = p.strip()
-        if p and p not in seen and len(p) < 120:
+        if not p or len(p) >= 120:
+            continue
+        # Skip bare filenames that aren't known root configs
+        if "/" not in p and p not in _ROOT_CONFIGS:
+            continue
+        if p not in seen:
             seen.add(p)
             result.append(p)
     return result[:30]
@@ -172,6 +192,7 @@ async def implement_issue(
         "--no-check-update",
         "--no-show-model-warnings",
         "--edit-format", edit_format,
+        "--map-tokens", "1024",   # cap repo map — avoids token overflow on large repos
         "--git",
         "--auto-commits",
     ]
