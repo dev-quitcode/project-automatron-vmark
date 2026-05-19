@@ -149,8 +149,10 @@ async def implement_issue(
         await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
         await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
 
-    # diff format: outputs only changed lines, handles special path chars correctly
-    edit_format = "diff"
+    # Re-implementation: diff patches only the broken parts in existing files on the branch.
+    # Fresh implementation: whole writes complete new files from scratch (diff needs files
+    # already in context, which is impossible when the target files don't exist yet).
+    edit_format = "diff" if is_reimplementation else "whole"
 
     # Detect empty/minimal repo
     non_git_files = [
