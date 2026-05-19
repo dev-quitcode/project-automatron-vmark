@@ -359,6 +359,9 @@ async def init_db(db_path: str) -> None:
         )
 
         await _ensure_columns(db, "projects", PROJECT_COLUMN_DEFS)
+        await _ensure_columns(db, "github_issues", {
+            "build_status": "TEXT",
+        })
         await db.commit()
         logger.info("Database initialized: %s", db_path)
 
@@ -988,6 +991,18 @@ async def update_github_issue_status(
         await db.execute(
             "UPDATE github_issues SET status = ?, updated_at = ? WHERE project_id = ? AND issue_number = ?",
             (status, _now(), project_id, issue_number),
+        )
+        await db.commit()
+
+
+async def update_github_issue_build_status(
+    project_id: str, issue_number: int, build_status: str
+) -> None:
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        await db.execute(
+            "UPDATE github_issues SET build_status = ?, updated_at = ? WHERE project_id = ? AND issue_number = ?",
+            (build_status, _now(), project_id, issue_number),
         )
         await db.commit()
 

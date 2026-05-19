@@ -20,6 +20,7 @@ from orchestrator.models.project import (
     update_github_issue_status,
 )
 from orchestrator.orchestrator import review_pr as orch_review_pr, sync_issues as orch_sync_issues
+from orchestrator.build_check import run_build_check as orch_run_build_check
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -164,6 +165,18 @@ async def github_webhook(
             await emit_issues_updated(project_id, issues)
             if merged:
                 background_tasks.add_task(orch_sync_issues, project_id)
+                # Look up project to get owner/repo/default_branch for build check
+                from orchestrator.models.project import get_project
+                project = await get_project(project_id)
+                if project:
+                    background_tasks.add_task(
+                        orch_run_build_check,
+                        project_id,
+                        project.get("github_repo_owner") or owner,
+                        project.get("github_repo_name") or repo_name,
+                        issue_number,
+                        project.get("default_branch") or "main",
+                    )
             logger.info(
                 "Webhook: PR #%s closed (merged=%s) → issue #%s %s (project=%s)",
                 pr_number, merged, issue_number, new_status, project_id,

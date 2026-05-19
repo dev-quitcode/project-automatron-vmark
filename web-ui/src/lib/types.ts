@@ -103,6 +103,8 @@ export interface PRReview {
   issue_number: number;
 }
 
+export type BuildStatus = "running" | "passed" | "failed" | null;
+
 export interface GithubIssue {
   id: string;
   project_id: string;
@@ -115,6 +117,7 @@ export interface GithubIssue {
   pr_url: string | null;
   pr_review: PRReview | null;
   copilot_workspace_url: string | null;
+  build_status: BuildStatus;
   created_at: string;
   updated_at: string;
 }

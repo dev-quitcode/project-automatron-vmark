@@ -5,7 +5,7 @@ import type { GithubIssue, IssueStatus } from "@/lib/types";
 import {
   ExternalLink, GitPullRequest, CheckCircle2, Circle,
   GitMerge, Loader2, ChevronDown, ChevronUp, XCircle,
-  Zap, Eye, ThumbsUp, Bot,
+  Zap, Eye, ThumbsUp, Bot, Hammer,
 } from "lucide-react";
 
 interface IssueCardProps {
@@ -116,6 +116,23 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
                 PR #{issue.pr_number}
                 <ExternalLink className="h-2.5 w-2.5" />
               </a>
+            )}
+
+            {/* Build status badge */}
+            {issue.build_status === "running" && (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/30 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400">
+                <Loader2 className="h-3 w-3 animate-spin" /> Building…
+              </span>
+            )}
+            {issue.build_status === "passed" && (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-green-500/30 bg-green-500/5 px-2 py-1 text-xs font-medium text-green-400">
+                <CheckCircle2 className="h-3 w-3" /> Build passed
+              </span>
+            )}
+            {issue.build_status === "failed" && (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1 text-xs font-medium text-red-400">
+                <XCircle className="h-3 w-3" /> Build failed
+              </span>
             )}
 
             {/* Working — Aider running (persisted via DB status) */}
