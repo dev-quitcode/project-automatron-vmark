@@ -1175,6 +1175,12 @@ async def implement_with_aider(project_id: str, issue_number: int) -> None:
     model = llm_cfg.get("builder", {}).get("model", "anthropic/claude-sonnet-4-6")
     # Remove internal claude/ prefix if present; keep anthropic/ for LiteLLM routing
     model = model.replace("claude/", "")
+    # Validate model — fall back if it looks like a hallucinated or unrecognized name
+    _KNOWN_PREFIXES = ("anthropic/", "claude-", "gpt-4", "gpt-4o", "openai/", "gemini", "deepseek")
+    _is_gpt = model.startswith(("gpt-", "openai/"))
+    if not any(model.startswith(p) for p in _KNOWN_PREFIXES) or (_is_gpt and not settings.openai_api_key):
+        logger.warning("Aider: unrecognized or unconfigured model %r — falling back to claude-sonnet-4-6", model)
+        model = "anthropic/claude-sonnet-4-6"
 
     action = "re-implementing" if existing_pr_number else "starting"
     await orch._log(f"Aider {action} on #{issue_number}", issue_title, "RUNNING")

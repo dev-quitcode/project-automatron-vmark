@@ -195,6 +195,18 @@ async def implement_issue(
         if rc_commit != 0:
             logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, out[-2000:])
             return None
+        # Re-check after force commit
+        _, committed_files2 = await _run(
+            ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
+            cwd=repo_dir,
+        )
+        meaningful_files = [
+            f for f in committed_files2.splitlines()
+            if f.strip() and f.strip() not in (".gitignore", ".aider.gitignore")
+        ]
+        if not meaningful_files:
+            logger.error("Aider: still no meaningful files after force commit for issue #%d", issue_number)
+            return None
 
     # Push branch
     await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)
