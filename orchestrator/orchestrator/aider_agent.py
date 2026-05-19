@@ -207,7 +207,7 @@ async def implement_issue(
         "--no-check-update",
         "--no-show-model-warnings",
         "--edit-format", edit_format,
-        "--map-tokens", "1024",   # cap repo map — avoids token overflow on large repos
+        "--map-tokens", "4096",
         "--git",
         "--auto-commits",
     ]
