@@ -199,9 +199,12 @@ async def implement_issue(
         "--auto-commits",
     ]
 
-    # Pass extracted file paths so Aider creates/edits them directly
+    # Only pass --file for files that ALREADY EXIST in the repo.
+    # For new files, let Aider create them via --- /dev/null diff convention.
+    # Pre-creating empty placeholders confuses the LLM into doubling path prefixes.
     for fp in file_paths:
-        aider_args.extend(["--file", fp])
+        if (repo_dir / fp).exists():
+            aider_args.extend(["--file", fp])
 
     if shutil.which("aider"):
         aider_cmd = ["aider", *aider_args]
