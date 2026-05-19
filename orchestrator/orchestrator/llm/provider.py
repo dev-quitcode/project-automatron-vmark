@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -107,58 +108,73 @@ async def call_llm(
             stage=trace_context.get("stage"),
         )
 
-    try:
-        request_kwargs = _completion_kwargs(
-            model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        response = await litellm.acompletion(
-            messages=msg_dicts,
-            **request_kwargs,
-        )
-        content = response.choices[0].message.content or ""
+    request_kwargs = _completion_kwargs(model, temperature=temperature, max_tokens=max_tokens)
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        try:
+            response = await litellm.acompletion(messages=msg_dicts, **request_kwargs)
+            content = response.choices[0].message.content or ""
 
-        # Log usage
-        usage = response.usage
-        if usage:
-            logger.info(
-                "LLM response: model=%s, input_tokens=%d, output_tokens=%d",
-                model,
-                usage.prompt_tokens,
-                usage.completion_tokens,
-            )
-        if trace_context and trace_context.get("project_id"):
-            await trace_event(
-                trace_context["project_id"],
-                trace_context.get("actor", "llm"),
-                "llm.call.completed",
-                {
-                    "model": model,
-                    "response": content,
-                    "usage": {
-                        "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
-                        "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+            usage = response.usage
+            if usage:
+                logger.info(
+                    "LLM response: model=%s, input_tokens=%d, output_tokens=%d",
+                    model, usage.prompt_tokens, usage.completion_tokens,
+                )
+            if trace_context and trace_context.get("project_id"):
+                await trace_event(
+                    trace_context["project_id"],
+                    trace_context.get("actor", "llm"),
+                    "llm.call.completed",
+                    {
+                        "model": model,
+                        "response": content,
+                        "usage": {
+                            "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+                            "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+                        },
                     },
-                },
-                session_id=trace_context.get("session_id"),
-                stage=trace_context.get("stage"),
-            )
+                    session_id=trace_context.get("session_id"),
+                    stage=trace_context.get("stage"),
+                )
+            return content
 
-        return content
+        except litellm.RateLimitError as e:
+            last_exc = e
+            wait = 60 * (attempt + 1)  # 60s, 120s, 180s
+            logger.warning("LLM rate limit (model=%s, attempt=%d): waiting %ds — %s", model, attempt + 1, wait, e)
+            await asyncio.sleep(wait)
 
-    except Exception as e:
-        logger.error("LLM call failed (model=%s): %s", model, e)
-        if trace_context and trace_context.get("project_id"):
-            await trace_event(
-                trace_context["project_id"],
-                trace_context.get("actor", "llm"),
-                "llm.call.failed",
-                {"model": model, "error": str(e)},
-                session_id=trace_context.get("session_id"),
-                stage=trace_context.get("stage"),
-            )
-        raise
+        except (litellm.ServiceUnavailableError, litellm.APIConnectionError) as e:
+            last_exc = e
+            wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+            logger.warning("LLM transient error (model=%s, attempt=%d): waiting %ds — %s", model, attempt + 1, wait, e)
+            await asyncio.sleep(wait)
+
+        except Exception as e:
+            logger.error("LLM call failed (model=%s): %s", model, e)
+            if trace_context and trace_context.get("project_id"):
+                await trace_event(
+                    trace_context["project_id"],
+                    trace_context.get("actor", "llm"),
+                    "llm.call.failed",
+                    {"model": model, "error": str(e)},
+                    session_id=trace_context.get("session_id"),
+                    stage=trace_context.get("stage"),
+                )
+            raise
+
+    logger.error("LLM call failed after retries (model=%s): %s", model, last_exc)
+    if trace_context and trace_context.get("project_id"):
+        await trace_event(
+            trace_context["project_id"],
+            trace_context.get("actor", "llm"),
+            "llm.call.failed",
+            {"model": model, "error": str(last_exc)},
+            session_id=trace_context.get("session_id"),
+            stage=trace_context.get("stage"),
+        )
+    raise last_exc  # type: ignore[misc]
 
 
 async def call_llm_streaming(
