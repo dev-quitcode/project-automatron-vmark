@@ -140,7 +140,9 @@ async def implement_issue(
     await _run(["git", "checkout", default_branch], cwd=repo_dir)
     await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
     await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
-    edit_format = "whole"
+    # diff format: outputs only changed lines, far smaller than whole-file output,
+    # handles special path chars (parentheses, brackets) correctly, no 0-byte placeholders
+    edit_format = "diff"
 
     # Detect empty/minimal repo
     non_git_files = [
