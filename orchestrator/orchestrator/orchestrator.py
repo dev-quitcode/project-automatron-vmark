@@ -817,7 +817,7 @@ class GitHubOrchestrator:
         user_msg = (
             f"## Issue #{issue_number}: {issue.get('title', '')}\n\n"
             f"{issue_body}\n\n"
-            f"---\n\n## PR Diff\n\n```diff\n{diff[:12000]}\n```"
+            f"---\n\n## PR Diff\n\n```diff\n{diff[:80000]}\n```"
         )
 
         try:
