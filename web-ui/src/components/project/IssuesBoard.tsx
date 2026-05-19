@@ -34,17 +34,21 @@ export function IssuesBoard({
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [showNewIssueForm, setShowNewIssueForm] = useState(false);
   const [newIssuePrompt, setNewIssuePrompt] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleStartPreview = async () => {
     setIsStartingPreview(true);
+    setPreviewError(null);
     try {
       await onStartPreview();
-    } finally {
       // Keep spinner until previewUrl arrives via WebSocket (max 3 min)
       setTimeout(() => setIsStartingPreview(false), 180_000);
+    } catch (err: any) {
+      setIsStartingPreview(false);
+      setPreviewError(err?.message ?? "Failed to start preview");
     }
   };
 
@@ -172,7 +176,13 @@ export function IssuesBoard({
       </div>
 
       {/* Preview bar — always available */}
-      <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+      {previewError && (
+        <div className="px-4 py-2 text-xs text-red-400 bg-red-500/5 border-b border-border">
+          {previewError}
+        </div>
+      )}
+      <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
           <Monitor className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Preview</span>
@@ -195,6 +205,7 @@ export function IssuesBoard({
             <Monitor className="h-3 w-3" /> Launch Preview
           </button>
         )}
+      </div>
       </div>
 
       {/* Status summary pills */}

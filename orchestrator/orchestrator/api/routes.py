@@ -490,25 +490,28 @@ async def api_restart_preview(project_id: str, background_tasks: BackgroundTasks
     repo = project.get("github_repo_name") or ""
     if not owner or not repo:
         raise HTTPException(status_code=422, detail="Project has no GitHub repo configured")
-    background_tasks.add_task(_run_preview_and_save, project_id, owner, repo)
+    default_branch = project.get("default_branch") or "main"
+    background_tasks.add_task(_run_preview_and_save, project_id, owner, repo, default_branch)
     return {"status": "started", "project_id": project_id}
 
 
-async def _run_preview_and_save(project_id: str, owner: str, repo: str) -> None:
+async def _run_preview_and_save(project_id: str, owner: str, repo: str, default_branch: str = "main") -> None:
     from orchestrator.preview import run_preview_locally
-    from orchestrator.api.websocket import emit_status_update
-    preview_url = await run_preview_locally(project_id, owner, repo)
-    if preview_url:
-        await update_project_preview(project_id, preview_url, "ready")
-        project = await get_project(project_id)
-        if project:
-            await emit_status_update(
-                project_id,
-                status=project.get("status", "idle"),
-                stage=project.get("project_stage", "issues"),
-                progress={},
-                preview_url=preview_url,
-            )
+    from orchestrator.api.websocket import emit_status_update, emit_error
+    preview_url = await run_preview_locally(project_id, owner, repo, default_branch)
+    if not preview_url:
+        await emit_error(project_id, "Preview build failed — check that the repo builds successfully")
+        return
+    await update_project_preview(project_id, preview_url, "ready")
+    project = await get_project(project_id)
+    if project:
+        await emit_status_update(
+            project_id,
+            status=project.get("status", "preview"),
+            stage=project.get("project_stage", "building"),
+            progress={},
+            preview_url=preview_url,
+        )
 
 
 def _raise_for_preflight_failure(result: PreflightResult) -> None:

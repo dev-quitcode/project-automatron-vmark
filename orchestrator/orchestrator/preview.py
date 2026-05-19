@@ -133,13 +133,15 @@ def _detect_internal_port(repo_dir: Path) -> int:
 
 # ── Main entry point ─────────────────────────────────────────────────────────
 
-async def run_preview_locally(project_id: str, owner: str, repo: str) -> str | None:
-    """Clone the repo, build, and run it in Docker. Returns http://localhost:{port} or None."""
+async def run_preview_locally(
+    project_id: str, owner: str, repo: str, default_branch: str = "main"
+) -> str | None:
+    """Clone the repo, build, and run it in Docker. Returns the preview URL or None."""
     workspace = settings.workspace_base_dir / str(project_id)
     workspace.mkdir(parents=True, exist_ok=True)
-    repo_dir = workspace / "repo"
+    # Use a separate directory from the aider workspace to avoid branch conflicts
+    repo_dir = workspace / "preview-repo"
 
-    # Clone or pull
     token = settings.github_token
     clone_url = (
         f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
@@ -148,8 +150,11 @@ async def run_preview_locally(project_id: str, owner: str, repo: str) -> str | N
     )
 
     if (repo_dir / ".git").exists():
-        logger.info("Preview: pulling latest for %s/%s", owner, repo)
-        rc, out = _run(["git", "pull", "--ff-only"], cwd=repo_dir)
+        logger.info("Preview: syncing %s/%s to %s", owner, repo, default_branch)
+        _run(["git", "remote", "set-url", "origin", clone_url], cwd=repo_dir)
+        _run(["git", "fetch", "origin"], cwd=repo_dir)
+        _run(["git", "checkout", default_branch], cwd=repo_dir)
+        rc, out = _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
     else:
         logger.info("Preview: cloning %s/%s", owner, repo)
         rc, out = _run(["git", "clone", clone_url, str(repo_dir)])
