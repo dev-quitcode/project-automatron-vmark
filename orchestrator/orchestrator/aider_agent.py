@@ -74,6 +74,56 @@ async def _run_aider(
             pass
 
 
+def _collapse_path_segments(path: str) -> str:
+    """Collapse duplicated leading path segments, e.g. src/app/src/app/x → src/app/x.
+
+    Aider's LLM sometimes prepends the working-directory prefix to a path it already
+    received as a --file arg, producing doubled segments. This detects the first
+    repetition and removes the duplicate.
+    """
+    parts = path.replace("\\", "/").split("/")
+    for length in range(1, len(parts) // 2 + 1):
+        prefix = parts[:length]
+        if parts[length:length + length] == prefix:
+            return "/".join(parts[:length] + parts[length * 2:])
+    return path
+
+
+async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
+    """Detect files committed at paths with duplicated segments and move them.
+
+    Returns the number of files corrected.
+    """
+    _, committed = await _run(
+        ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
+        cwd=repo_dir,
+    )
+    fixes = 0
+    for raw in committed.splitlines():
+        path = raw.strip()
+        if not path:
+            continue
+        corrected = _collapse_path_segments(path)
+        if corrected == path:
+            continue
+        target = repo_dir / corrected
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rc, out = await _run(["git", "mv", "--force", path, corrected], cwd=repo_dir)
+        if rc == 0:
+            fixes += 1
+            logger.warning("Aider: moved misplaced file %s → %s", path, corrected)
+        else:
+            logger.error("Aider: could not move %s → %s: %s", path, corrected, out)
+    if fixes:
+        rc, _ = await _run(
+            ["git", "commit", "-m", f"fix: correct {fixes} misplaced file path(s)"],
+            cwd=repo_dir,
+        )
+        if rc != 0:
+            logger.warning("Aider: fixup commit failed (files may already be staged)")
+    return fixes
+
+
 def _extract_file_paths(text: str) -> list[str]:
     """Pull file paths out of an issue body.
 
@@ -225,12 +275,23 @@ async def implement_issue(
         )
     )
 
+    preserve_note = (
+        "\n\nIMPORTANT: Only write the files explicitly listed above. "
+        "Do NOT modify, overwrite, or delete any other existing files in the repository."
+        "\n\nCRITICAL PATH RULE: Write every file at EXACTLY the path shown. "
+        "The working directory is the repository root. "
+        "Never duplicate path segments — e.g. if the target is `src/app/foo/page.tsx`, "
+        "write it at `src/app/foo/page.tsx`, NOT at `src/app/src/app/foo/page.tsx`."
+        if not is_reimplementation
+        else ""
+    )
+
     task = (
         f"# Task: {issue_title}\n\n"
         f"{issue_body}\n\n"
         f"Implement the task described above. Follow all implementation notes and "
         f"acceptance criteria exactly. Write complete, working file contents for every "
-        f"file you create or modify.{scratch_note}{reimpl_note}"
+        f"file you create or modify.{scratch_note}{reimpl_note}{preserve_note}"
     )
 
     env = {**os.environ}
@@ -266,9 +327,16 @@ async def implement_issue(
                 abs_fp.touch()
                 placeholders_created.append(abs_fp)
 
-    for fp in file_paths:
-        if (repo_dir / fp).exists():
-            aider_args.extend(["--file", fp])
+    # whole format: only pass the empty placeholders we just created.
+    # Passing pre-existing non-empty files would cause Aider to overwrite them entirely.
+    # diff format: pass all existing files so Aider can patch them.
+    if is_reimplementation:
+        for fp in file_paths:
+            if (repo_dir / fp).exists():
+                aider_args.extend(["--file", fp])
+    else:
+        for ph in placeholders_created:
+            aider_args.extend(["--file", str(ph.relative_to(repo_dir))])
 
     if shutil.which("aider"):
         aider_cmd = ["aider", *aider_args]
@@ -331,6 +399,11 @@ async def implement_issue(
             tail = aider_out[-500:].strip()
             snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
             return None, f"Aider wrote no files (only housekeeping).\n\n{snippet}"
+
+    # Correct any files that Aider wrote at paths with duplicated segments
+    fixed = await _fix_duplicated_paths(repo_dir, default_branch)
+    if fixed:
+        logger.info("Aider: corrected %d misplaced file(s) for issue #%d", fixed, issue_number)
 
     # Push branch
     await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)
