@@ -313,6 +313,8 @@ async def implement_issue(
             head = aider_out[:1000].strip()
             tail = aider_out[-500:].strip()
             snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
+            if "credit balance is too low" in aider_out or "insufficient_quota" in aider_out:
+                return None, "Anthropic API credit balance is too low — top up at console.anthropic.com/billing"
             return None, f"Aider made no changes (rc={rc}).\n\n{snippet}"
         # Re-check after force commit
         _, committed_files2 = await _run(
