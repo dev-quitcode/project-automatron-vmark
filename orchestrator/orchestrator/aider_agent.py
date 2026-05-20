@@ -215,9 +215,20 @@ async def implement_issue(
         "--auto-commits",
     ]
 
-    # Only pass --file for files that ALREADY EXIST in the repo.
-    # For new files, let Aider create them via --- /dev/null diff convention.
-    # Pre-creating empty placeholders confuses the LLM into doubling path prefixes.
+    # Aider v0.86+ exits without any LLM call when no --file args are supplied.
+    # For fresh implementations: create empty placeholder files for target paths
+    # that don't exist yet so they can be passed as --file args.
+    # Aider (whole format) overwrites the file with full content — no path doubling.
+    # For re-implementations (diff format): files already exist on the branch.
+    placeholders_created: list[Path] = []
+    if not is_reimplementation:
+        for fp in file_paths:
+            abs_fp = repo_dir / fp
+            if not abs_fp.exists():
+                abs_fp.parent.mkdir(parents=True, exist_ok=True)
+                abs_fp.touch()
+                placeholders_created.append(abs_fp)
+
     for fp in file_paths:
         if (repo_dir / fp).exists():
             aider_args.extend(["--file", fp])
@@ -235,6 +246,12 @@ async def implement_issue(
     logger.info("Aider: running %s on issue #%d (%s)", edit_format, issue_number, issue_title)
     rc, aider_out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
     logger.info("Aider output (rc=%d):\n%s", rc, aider_out[-4000:])
+
+    # Remove placeholder files that Aider didn't fill in (still empty after run)
+    for ph in placeholders_created:
+        if ph.exists() and ph.stat().st_size == 0:
+            ph.unlink()
+            logger.debug("Aider: removed empty placeholder %s", ph)
 
     # Check something meaningful was committed (not just .gitignore housekeeping)
     _, committed_files = await _run(
