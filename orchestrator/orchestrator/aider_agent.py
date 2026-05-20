@@ -23,6 +23,7 @@ async def _run(
 ) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
@@ -254,8 +255,10 @@ async def implement_issue(
         )
         logger.info("Force commit rc=%d: %s", rc_commit, commit_out[:500])
         if rc_commit != 0:
-            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, aider_out[-2000:])
-            snippet = aider_out[-800:].strip() or "(no output)"
+            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, aider_out)
+            head = aider_out[:1000].strip()
+            tail = aider_out[-500:].strip()
+            snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
             return None, f"Aider made no changes (rc={rc}).\n\n{snippet}"
         # Re-check after force commit
         _, committed_files2 = await _run(
@@ -268,7 +271,9 @@ async def implement_issue(
         ]
         if not meaningful_files:
             logger.error("Aider: still no meaningful files for issue #%d", issue_number)
-            snippet = aider_out[-800:].strip() or "(no output)"
+            head = aider_out[:1000].strip()
+            tail = aider_out[-500:].strip()
+            snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
             return None, f"Aider wrote no files (only housekeeping).\n\n{snippet}"
 
     # Push branch
