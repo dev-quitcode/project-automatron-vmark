@@ -31,16 +31,73 @@ def _detect_build_command(repo_dir: Path) -> list[str] | None:
     return None
 
 
+def _extract_build_error(detail: str) -> str:
+    """Pull the most informative lines out of npm build output."""
+    lines = detail.splitlines()
+    # Collect lines that look like errors
+    error_lines = [l for l in lines if any(k in l for k in ("Error:", "error TS", "⨯", "Failed to", "Cannot find", "SyntaxError", "TypeError", "× "))]
+    if error_lines:
+        return "\n".join(error_lines[:20])
+    # Fall back to last 20 lines
+    return "\n".join(lines[-20:])
+
+
+async def _create_build_failure_issue(
+    project_id: str,
+    owner: str,
+    repo: str,
+    default_branch: str,
+    detail: str,
+) -> None:
+    """Open a GitHub issue for the build failure and record it in the DB."""
+    import uuid as _uuid
+    from orchestrator.github.issues import GitHubClient
+    from orchestrator.models.project import create_github_issue, list_github_issues
+    from orchestrator.api.websocket import emit_issues_updated
+
+    summary = _extract_build_error(detail)
+    title = f"Build failure on {default_branch}"
+    body = (
+        f"## Build check failed on `{default_branch}`\n\n"
+        f"Running `npm run build` failed. Error summary:\n\n"
+        f"```\n{summary[:3000]}\n```\n\n"
+        f"**Full log** is in the Automatron Activity tab.\n\n"
+        f"### Acceptance criteria\n"
+        f"- [ ] `npm run build` exits 0 on `{default_branch}`\n"
+    )
+
+    try:
+        gh = GitHubClient()
+        gh_issue = await gh.create_issue(owner, repo, title=title, body=body, labels=["bug"])
+        issue_number = gh_issue["number"]
+        html_url = gh_issue["html_url"]
+        await create_github_issue(
+            str(_uuid.uuid4()),
+            project_id,
+            issue_number,
+            title,
+            epic="Build",
+            copilot_workspace_url=html_url,
+        )
+        updated_issues = await list_github_issues(project_id)
+        await emit_issues_updated(project_id, updated_issues)
+        logger.info("Build check: created GitHub issue #%d for build failure", issue_number)
+    except Exception as exc:
+        logger.error("Build check: failed to create GitHub issue: %s", exc)
+
+
 async def run_project_build_check(
     project_id: str,
     owner: str,
     repo: str,
     default_branch: str = "main",
 ) -> None:
-    """Run npm run build on the default branch and log the result to activity_logs."""
+    """Run npm run build on the default branch and log the result to activity_logs.
+
+    On failure, automatically opens a GitHub issue describing the error.
+    """
     from orchestrator.models.project import save_activity_log, get_activity_logs
-    from orchestrator.api.websocket import emit_error, emit_status_update
-    import uuid as _uuid
+    from orchestrator.api.websocket import emit_error
 
     workspace = settings.workspace_base_dir / str(project_id)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -53,7 +110,6 @@ async def run_project_build_check(
         else f"https://github.com/{owner}/{repo}.git"
     )
 
-    # Compute next seq for activity log
     existing = await get_activity_logs(project_id)
     seq = (max((r.get("seq", 0) for r in existing), default=0) + 1)
 
@@ -105,8 +161,9 @@ async def run_project_build_check(
         else:
             detail = str(exc)
         await save_activity_log(project_id, seq, "Build check: FAILED", detail, "ERROR")
-        await emit_error(project_id, f"Build check failed — see Activity tab for details")
+        await emit_error(project_id, "Build check failed — GitHub issue created")
         logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, detail[-200:])
+        await _create_build_failure_issue(project_id, owner, repo, default_branch, detail)
 
 
 async def run_build_check(
