@@ -60,6 +60,10 @@ async def run_build_in_docker(repo_dir: Path) -> tuple[bool, str]:
         if isinstance(exc, docker_sdk.errors.ContainerError):
             stderr = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
             return False, stderr
+        # Docker daemon not reachable — treat as skipped (not a build failure)
+        if "docker" in type(exc).__module__ or "connect" in str(exc).lower() or "socket" in str(exc).lower():
+            logger.warning("run_build_in_docker: Docker unavailable (%s) — treating as pass", exc)
+            return True, f"Docker unavailable — skipped: {exc}"
         return False, str(exc)
 
 

@@ -436,10 +436,19 @@ async def implement_issue(
     if fixed:
         logger.info("Aider: corrected %d misplaced file(s) for issue #%d", fixed, issue_number)
 
-    # Pre-push build validation — catch broken code before it reaches GitHub
+    # Pre-push build validation — catch broken code before it reaches GitHub.
+    # Skip gracefully when Docker is unavailable (build check is best-effort).
     from orchestrator.build_check import run_build_in_docker, _extract_build_error
     logger.info("Aider: running pre-push build check for issue #%d", issue_number)
-    build_passed, build_output = await run_build_in_docker(repo_dir)
+    try:
+        import docker as _docker_sdk
+        _docker_sdk.from_env()  # raises if daemon not reachable
+        _docker_available = True
+    except Exception:
+        _docker_available = False
+        logger.warning("Aider: Docker not available — skipping pre-push build check for issue #%d", issue_number)
+
+    build_passed, build_output = (True, "") if not _docker_available else await run_build_in_docker(repo_dir)
     if not build_passed:
         logger.warning("Aider: pre-push build failed for issue #%d — retrying with fix", issue_number)
         fix_task = (
