@@ -70,6 +70,7 @@ export default function ProjectPage() {
   const [assigningIssues, setAssigningIssues] = useState<Set<number>>(new Set());
   const [implementingIssues, setImplementingIssues] = useState<Set<number>>(new Set());
   const [isCreatingIssue, setIsCreatingIssue] = useState(false);
+  const [isCheckingBuild, setIsCheckingBuild] = useState(false);
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
     cloneProjectLlmConfig(defaultProjectLlmConfig)
   );
@@ -287,6 +288,17 @@ export default function ProjectPage() {
     } finally {
       // Keep spinner until WS fires issues:updated (max 60s)
       setTimeout(() => setIsCreatingIssue(false), 60_000);
+    }
+  };
+
+  const handleBuildCheck = async () => {
+    setIsCheckingBuild(true);
+    try {
+      await api.runProjectBuildCheck(projectId);
+      // Keep spinner for a bit — result arrives in activity logs
+      setTimeout(() => setIsCheckingBuild(false), 180_000);
+    } catch {
+      setIsCheckingBuild(false);
     }
   };
 
@@ -876,12 +888,14 @@ export default function ProjectPage() {
               onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
               onImplementAider={(issueNumber) => void handleImplementAider(issueNumber)}
               onCreateIssue={(prompt) => void handleCreateIssue(prompt)}
+              onBuildCheck={() => void handleBuildCheck()}
               reviewingIssues={reviewingIssues}
               assigningIssues={assigningIssues}
               implementingIssues={implementingIssues}
               isSyncing={isSyncingIssues}
               isAuditing={isAuditing}
               isCreatingIssue={isCreatingIssue}
+              isCheckingBuild={isCheckingBuild}
             />
           </div>
         )}

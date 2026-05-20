@@ -221,6 +221,10 @@ export async function auditProject(projectId: string): Promise<{ status: string 
   return request(`/api/projects/${projectId}/audit`, { method: "POST" });
 }
 
+export async function runProjectBuildCheck(projectId: string): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/build-check`, { method: "POST" });
+}
+
 export async function uploadFigmaFile(
   projectId: string,
   file: File

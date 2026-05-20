@@ -5,7 +5,7 @@ import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send, Hammer,
 } from "lucide-react";
 
 interface IssuesBoardProps {
@@ -19,18 +19,20 @@ interface IssuesBoardProps {
   onAssignCopilot: (issueNumber: number) => void;
   onImplementAider: (issueNumber: number) => void;
   onCreateIssue: (prompt: string) => void;
+  onBuildCheck: () => void;
   reviewingIssues: Set<number>;
   assigningIssues: Set<number>;
   implementingIssues: Set<number>;
   isSyncing: boolean;
   isAuditing: boolean;
   isCreatingIssue: boolean;
+  isCheckingBuild: boolean;
 }
 
 export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
-  onImplementAider, onCreateIssue, reviewingIssues, assigningIssues, implementingIssues,
-  isSyncing, isAuditing, isCreatingIssue,
+  onImplementAider, onCreateIssue, onBuildCheck, reviewingIssues, assigningIssues, implementingIssues,
+  isSyncing, isAuditing, isCreatingIssue, isCheckingBuild,
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
@@ -128,6 +130,11 @@ export function IssuesBoard({
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">
             <ScanSearch className={`h-3 w-3 ${isAuditing ? "animate-pulse" : ""}`} />
             {isAuditing ? "Auditing..." : "Audit Code"}
+          </button>
+          <button onClick={onBuildCheck} disabled={isCheckingBuild}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">
+            {isCheckingBuild ? <Loader2 className="h-3 w-3 animate-spin" /> : <Hammer className="h-3 w-3" />}
+            {isCheckingBuild ? "Building..." : "Build Check"}
           </button>
           <button onClick={onSync} disabled={isSyncing}
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50">

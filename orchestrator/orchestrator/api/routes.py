@@ -280,6 +280,19 @@ async def api_audit_project(project_id: str, background_tasks: BackgroundTasks) 
     return {"status": "auditing", "project_id": project_id}
 
 
+@router.post("/projects/{project_id}/build-check")
+async def api_run_build_check(project_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
+    project = await _get_required_project(project_id)
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        raise HTTPException(status_code=422, detail="Project has no GitHub repo configured")
+    default_branch = project.get("default_branch") or "main"
+    from orchestrator.build_check import run_project_build_check
+    background_tasks.add_task(run_project_build_check, project_id, owner, repo, default_branch)
+    return {"status": "started", "project_id": project_id}
+
+
 @router.post("/projects/{project_id}/figma-file")
 async def api_upload_figma_file(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
     """Accept a .fig file, extract its document.json, summarise it, store as design context."""
