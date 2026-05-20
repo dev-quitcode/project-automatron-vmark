@@ -8,6 +8,7 @@ import os
 import pty
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 
 from orchestrator.config import settings
@@ -122,6 +123,31 @@ async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
         if rc != 0:
             logger.warning("Aider: fixup commit failed (files may already be staged)")
     return fixes
+
+
+def _sanitize_issue_body(text: str) -> str:
+    """Strip ASCII/Unicode box-drawing characters that LLMs include in directory trees.
+
+    Aider treats lines like '└── types/index.ts' as file paths and creates junk files
+    literally named with those characters. We drop such lines entirely and remove any
+    stray box-drawing chars (U+2500–U+257F) from what remains.
+    """
+    clean_lines = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped:
+            first_cp = ord(stripped[0])
+            # U+2500–U+257F: Box Drawing block; also catch common chars individually
+            if 0x2500 <= first_cp <= 0x257F:
+                continue
+            # Drop lines whose first non-space char is a box-drawing "So" category char
+            if unicodedata.category(stripped[0]) == "So" and first_cp > 0x2000:
+                continue
+        clean_lines.append(line)
+    # Remove any stray box-drawing chars that snuck into the middle of lines
+    cleaned = "\n".join(clean_lines)
+    cleaned = re.sub(r"[─-╿├└│┐┌┼]+", "", cleaned)
+    return cleaned
 
 
 def _extract_file_paths(text: str) -> list[str]:
@@ -249,6 +275,9 @@ async def implement_issue(
     ]
     is_empty_repo = len(non_git_files) <= 2
 
+    # Strip ASCII tree-diagram lines before any further processing
+    issue_body = _sanitize_issue_body(issue_body)
+
     # Extract file paths from the issue so Aider has explicit targets
     file_paths = _extract_file_paths(issue_body)
     logger.info("Aider: extracted %d file targets: %s", len(file_paths), file_paths)
@@ -282,6 +311,8 @@ async def implement_issue(
         "The working directory is the repository root. "
         "Never duplicate path segments — e.g. if the target is `src/app/foo/page.tsx`, "
         "write it at `src/app/foo/page.tsx`, NOT at `src/app/src/app/foo/page.tsx`."
+        "\n\nDo NOT create files based on any directory tree diagrams in the task — "
+        "those are for reference only. Only create files at the exact paths listed above."
         if not is_reimplementation
         else ""
     )
@@ -404,6 +435,41 @@ async def implement_issue(
     fixed = await _fix_duplicated_paths(repo_dir, default_branch)
     if fixed:
         logger.info("Aider: corrected %d misplaced file(s) for issue #%d", fixed, issue_number)
+
+    # Pre-push build validation — catch broken code before it reaches GitHub
+    from orchestrator.build_check import run_build_in_docker, _extract_build_error
+    logger.info("Aider: running pre-push build check for issue #%d", issue_number)
+    build_passed, build_output = await run_build_in_docker(repo_dir)
+    if not build_passed:
+        logger.warning("Aider: pre-push build failed for issue #%d — retrying with fix", issue_number)
+        fix_task = (
+            f"The code you just wrote has a build error. Fix it.\n\n"
+            f"Build error:\n```\n{build_output[-3000:]}\n```\n\n"
+            f"Fix only what is broken. Do not rewrite files that are working."
+        )
+        fix_args = [
+            "--model", model, "--message", fix_task,
+            "--yes", "--no-pretty", "--no-check-update", "--no-show-model-warnings",
+            "--edit-format", "diff",
+            "--map-tokens", "4096", "--git", "--auto-commits",
+        ]
+        if shutil.which("aider"):
+            fix_cmd = ["aider", *fix_args]
+        elif shutil.which("uvx"):
+            fix_cmd = ["uvx", "aider-chat", *fix_args]
+        else:
+            fix_cmd = ["uv", "tool", "run", "aider-chat", *fix_args]
+
+        _, fix_out = await _run_aider(fix_cmd, cwd=repo_dir, env=env)
+        logger.info("Aider fix run output:\n%s", fix_out[-2000:])
+
+        build_passed2, build_output2 = await run_build_in_docker(repo_dir)
+        if not build_passed2:
+            logger.error("Aider: build still failing after retry for issue #%d", issue_number)
+            return None, f"Build failed after implementation:\n\n{_extract_build_error(build_output2)}"
+        logger.info("Aider: build passed after retry for issue #%d", issue_number)
+    else:
+        logger.info("Aider: pre-push build PASSED for issue #%d", issue_number)
 
     # Push branch
     await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)

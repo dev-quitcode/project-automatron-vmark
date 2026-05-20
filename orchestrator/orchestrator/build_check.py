@@ -31,6 +31,38 @@ def _detect_build_command(repo_dir: Path) -> list[str] | None:
     return None
 
 
+async def run_build_in_docker(repo_dir: Path) -> tuple[bool, str]:
+    """Run npm run build inside a node:20-alpine container.
+
+    Returns (passed, output_or_error_string).
+    Returns (True, "...") when no build script is detected (treated as a pass).
+    """
+    build_cmd = _detect_build_command(repo_dir)
+    if build_cmd is None:
+        return True, "no build script detected — skipped"
+    try:
+        import docker as docker_sdk
+        client = docker_sdk.from_env()
+        container = client.containers.run(
+            "node:20-alpine",
+            command=build_cmd,
+            volumes={str(repo_dir.resolve()): {"bind": "/app", "mode": "rw"}},
+            working_dir="/app",
+            remove=True,
+            stdout=True,
+            stderr=True,
+            environment={"NODE_ENV": "production", "CI": "1", "NEXT_TELEMETRY_DISABLED": "1"},
+        )
+        output = container.decode(errors="replace") if isinstance(container, bytes) else str(container)
+        return True, output
+    except Exception as exc:
+        import docker as docker_sdk
+        if isinstance(exc, docker_sdk.errors.ContainerError):
+            stderr = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            return False, stderr
+        return False, str(exc)
+
+
 def _extract_build_error(detail: str) -> str:
     """Pull the most informative lines out of npm build output."""
     lines = detail.splitlines()
@@ -82,6 +114,11 @@ async def _create_build_failure_issue(
         updated_issues = await list_github_issues(project_id)
         await emit_issues_updated(project_id, updated_issues)
         logger.info("Build check: created GitHub issue #%d for build failure", issue_number)
+        # Auto-trigger Aider to fix the build failure without manual user action
+        import asyncio as _asyncio
+        from orchestrator.orchestrator import implement_with_aider
+        _asyncio.create_task(implement_with_aider(project_id, issue_number))
+        logger.info("Build check: auto-triggered Aider for build fix issue #%d", issue_number)
     except Exception as exc:
         logger.error("Build check: failed to create GitHub issue: %s", exc)
 
@@ -129,38 +166,14 @@ async def run_project_build_check(
         await emit_error(project_id, f"Build check: git failed — {out[-200:]}")
         return
 
-    build_cmd = _detect_build_command(repo_dir)
-    if build_cmd is None:
-        await save_activity_log(project_id, seq, "Build check: no build script found — skipped", "", "INFO")
-        return
+    logger.info("Build check (project): running npm run build for %s/%s", owner, repo)
+    passed, detail = await run_build_in_docker(repo_dir)
 
-    try:
-        import docker as docker_sdk
-        client = docker_sdk.from_env()
-        logger.info("Build check (project): running npm run build for %s/%s", owner, repo)
-
-        container = client.containers.run(
-            "node:20-alpine",
-            command=build_cmd,
-            volumes={str(repo_dir.resolve()): {"bind": "/app", "mode": "rw"}},
-            working_dir="/app",
-            remove=True,
-            stdout=True,
-            stderr=True,
-            environment={"NODE_ENV": "production", "CI": "1", "NEXT_TELEMETRY_DISABLED": "1"},
-        )
-        output = container.decode(errors="replace") if isinstance(container, bytes) else str(container)
-        await save_activity_log(project_id, seq, "Build check: PASSED", output[-2000:], "INFO")
+    if passed:
+        await save_activity_log(project_id, seq, "Build check: PASSED", detail[-2000:], "INFO")
         logger.info("Build check (project): PASSED for %s/%s", owner, repo)
-
-    except Exception as exc:
-        import docker as docker_sdk
-        if isinstance(exc, docker_sdk.errors.ContainerError):
-            stderr = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-            detail = stderr[-2000:]
-        else:
-            detail = str(exc)
-        await save_activity_log(project_id, seq, "Build check: FAILED", detail, "ERROR")
+    else:
+        await save_activity_log(project_id, seq, "Build check: FAILED", detail[-2000:], "ERROR")
         await emit_error(project_id, "Build check failed — GitHub issue created")
         logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, detail[-200:])
         await _create_build_failure_issue(project_id, owner, repo, default_branch, detail)
@@ -207,43 +220,13 @@ async def run_build_check(
         await emit_issues_updated(project_id, await list_github_issues(project_id))
         return False
 
-    build_cmd = _detect_build_command(repo_dir)
-    if build_cmd is None:
-        logger.info("Build check: no build command detected for %s/%s — skipping", owner, repo)
-        await update_github_issue_build_status(project_id, issue_number, "passed")
-        await emit_issues_updated(project_id, await list_github_issues(project_id))
-        return True
+    logger.info("Build check: running npm run build for %s/%s issue #%d", owner, repo, issue_number)
+    passed, detail = await run_build_in_docker(repo_dir)
 
-    # Run build inside a Node.js Docker container
-    try:
-        import docker as docker_sdk
-        client = docker_sdk.from_env()
-        logger.info("Build check: running npm run build for %s/%s issue #%d", owner, repo, issue_number)
-
-        container = client.containers.run(
-            "node:20-alpine",
-            command=build_cmd,
-            volumes={str(repo_dir.resolve()): {"bind": "/app", "mode": "rw"}},
-            working_dir="/app",
-            remove=True,
-            stdout=True,
-            stderr=True,
-            environment={"NODE_ENV": "production", "CI": "1", "NEXT_TELEMETRY_DISABLED": "1"},
-        )
-        output = container.decode(errors="replace") if isinstance(container, bytes) else str(container)
+    if passed:
         logger.info("Build check: PASSED for %s/%s issue #%d", owner, repo, issue_number)
-        logger.debug("Build output:\n%s", output[-2000:])
-        passed = True
-
-    except Exception as exc:
-        # ContainerError means the build command exited non-zero
-        import docker as docker_sdk
-        if isinstance(exc, docker_sdk.errors.ContainerError):
-            stderr = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-            logger.error("Build check: FAILED for %s/%s issue #%d\n%s", owner, repo, issue_number, stderr[-2000:])
-        else:
-            logger.error("Build check: error for %s/%s issue #%d: %s", owner, repo, issue_number, exc)
-        passed = False
+    else:
+        logger.error("Build check: FAILED for %s/%s issue #%d\n%s", owner, repo, issue_number, detail[-2000:])
 
     status = "passed" if passed else "failed"
     await update_github_issue_build_status(project_id, issue_number, status)
