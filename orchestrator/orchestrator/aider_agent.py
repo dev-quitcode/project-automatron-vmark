@@ -90,6 +90,64 @@ def _collapse_path_segments(path: str) -> str:
     return path
 
 
+_NEXTJS_ROUTE_FILES = {
+    "page.tsx", "page.ts", "page.jsx", "page.js",
+    "layout.tsx", "layout.ts", "layout.jsx", "layout.js",
+    "route.ts", "route.js",
+    "loading.tsx", "error.tsx", "not-found.tsx", "template.tsx",
+}
+
+
+async def _fix_nextjs_page_paths(repo_dir: Path, default_branch: str) -> int:
+    """Move Next.js routing files that Aider placed outside the app directory.
+
+    e.g. invite/page.tsx → src/app/invite/page.tsx when src/app/ exists.
+    Returns the number of files corrected.
+    """
+    # Locate the app directory (src/app preferred, then app/)
+    if (repo_dir / "src" / "app").exists():
+        app_root = Path("src/app")
+    elif (repo_dir / "app").exists():
+        app_root = Path("app")
+    else:
+        return 0
+
+    _, committed = await _run(
+        ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
+        cwd=repo_dir,
+    )
+    fixes = 0
+    for raw in committed.splitlines():
+        path = raw.strip()
+        if not path:
+            continue
+        p = Path(path)
+        if p.name not in _NEXTJS_ROUTE_FILES:
+            continue
+        # Already under the app root?
+        parts = p.parts
+        if "src" in parts or parts[0] == "app":
+            continue
+        # It's a Next.js routing file outside the app directory — move it in
+        target_rel = str(app_root / path)
+        (repo_dir / target_rel).parent.mkdir(parents=True, exist_ok=True)
+        rc, out = await _run(["git", "mv", "--force", path, target_rel], cwd=repo_dir)
+        if rc == 0:
+            fixes += 1
+            logger.warning("Aider: moved misplaced Next.js file %s → %s", path, target_rel)
+        else:
+            logger.error("Aider: could not move %s → %s: %s", path, target_rel, out)
+
+    if fixes:
+        rc, _ = await _run(
+            ["git", "commit", "-m", f"fix: move {fixes} Next.js page file(s) to app directory"],
+            cwd=repo_dir,
+        )
+        if rc != 0:
+            logger.warning("Aider: Next.js path fixup commit failed")
+    return fixes
+
+
 async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
     """Detect files committed at paths with duplicated segments and move them.
 
@@ -434,7 +492,12 @@ async def implement_issue(
     # Correct any files that Aider wrote at paths with duplicated segments
     fixed = await _fix_duplicated_paths(repo_dir, default_branch)
     if fixed:
-        logger.info("Aider: corrected %d misplaced file(s) for issue #%d", fixed, issue_number)
+        logger.info("Aider: corrected %d duplicated-path file(s) for issue #%d", fixed, issue_number)
+
+    # Move Next.js routing files that landed outside the app directory
+    fixed_nextjs = await _fix_nextjs_page_paths(repo_dir, default_branch)
+    if fixed_nextjs:
+        logger.info("Aider: moved %d misplaced Next.js page file(s) for issue #%d", fixed_nextjs, issue_number)
 
     # Pre-push build validation — catch broken code before it reaches GitHub.
     # Skip gracefully when Docker is unavailable (build check is best-effort).
