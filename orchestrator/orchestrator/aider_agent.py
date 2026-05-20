@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pty
 import re
 import shutil
 from pathlib import Path
@@ -35,6 +36,42 @@ async def _run(
     except asyncio.TimeoutError:
         proc.kill()
         return 1, f"Command timed out after {timeout}s"
+
+
+async def _run_aider(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int = 600,
+) -> tuple[int, str]:
+    """Run Aider with a pseudo-TTY on stdin.
+
+    Aider checks isatty(0) and exits before processing --message when stdin
+    is not a real terminal. A PTY slave as stdin satisfies that check.
+    """
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=slave_fd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+            env=env,
+        )
+        os.close(slave_fd)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode or 0, stdout.decode(errors="replace")
+        except asyncio.TimeoutError:
+            proc.kill()
+            return 1, f"Command timed out after {timeout}s"
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
 
 
 def _extract_file_paths(text: str) -> list[str]:
@@ -244,7 +281,7 @@ async def implement_issue(
         return None, "aider binary not found in PATH"
 
     logger.info("Aider: running %s on issue #%d (%s)", edit_format, issue_number, issue_title)
-    rc, aider_out = await _run(aider_cmd, cwd=repo_dir, env=env, timeout=600)
+    rc, aider_out = await _run_aider(aider_cmd, cwd=repo_dir, env=env)
     logger.info("Aider output (rc=%d):\n%s", rc, aider_out[-4000:])
 
     # Remove placeholder files that Aider didn't fill in (still empty after run)
