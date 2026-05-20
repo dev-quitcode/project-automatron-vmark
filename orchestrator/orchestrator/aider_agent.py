@@ -537,9 +537,15 @@ async def implement_issue(
 
         build_passed2, build_output2 = await run_build_in_docker(repo_dir)
         if not build_passed2:
-            logger.error("Aider: build still failing after retry for issue #%d", issue_number)
-            return None, f"Build failed after implementation:\n\n{_extract_build_error(build_output2)}"
-        logger.info("Aider: build passed after retry for issue #%d", issue_number)
+            # Push anyway — the user can review what Aider did. Blocking the push entirely
+            # means nothing reaches GitHub even when the Aider change is directionally correct
+            # but the repo has pre-existing or unrelated compile errors.
+            logger.warning(
+                "Aider: build still failing after retry for issue #%d — pushing for review",
+                issue_number,
+            )
+        else:
+            logger.info("Aider: build passed after retry for issue #%d", issue_number)
     else:
         logger.info("Aider: pre-push build PASSED for issue #%d", issue_number)
 
