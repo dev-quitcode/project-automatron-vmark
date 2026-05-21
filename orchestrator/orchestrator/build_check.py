@@ -24,7 +24,7 @@ def _detect_build_command(repo_dir: Path) -> list[str] | None:
             data = json.loads(pkg.read_text())
             scripts = data.get("scripts", {})
             if "build" in scripts:
-                return ["sh", "-c", "npm install --prefer-offline --no-audit && npm run build"]
+                return ["sh", "-c", "npm install --prefer-offline --no-audit --include=dev && npm run build"]
         except Exception:
             pass
         return None
