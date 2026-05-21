@@ -71,7 +71,7 @@ def _extract_build_error(detail: str) -> str:
     """Pull the most informative lines out of npm build output."""
     lines = detail.splitlines()
     # Collect lines that look like errors
-    error_lines = [l for l in lines if any(k in l for k in ("Error:", "error TS", "⨯", "Failed to", "Cannot find", "SyntaxError", "TypeError", "× "))]
+    error_lines = [l for l in lines if any(k in l for k in ("Error:", "error TS", "⨯", "Failed to", "Cannot find", "SyntaxError", "TypeError", "× ", "Module not found", "Can't resolve", "does not provide"))]
     if error_lines:
         return "\n".join(error_lines[:20])
     # Fall back to last 20 lines
