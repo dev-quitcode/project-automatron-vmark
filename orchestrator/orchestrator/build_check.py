@@ -118,11 +118,6 @@ async def _create_build_failure_issue(
         updated_issues = await list_github_issues(project_id)
         await emit_issues_updated(project_id, updated_issues)
         logger.info("Build check: created GitHub issue #%d for build failure", issue_number)
-        # Auto-trigger Aider to fix the build failure without manual user action
-        import asyncio as _asyncio
-        from orchestrator.orchestrator import implement_with_aider
-        _asyncio.create_task(implement_with_aider(project_id, issue_number))
-        logger.info("Build check: auto-triggered Aider for build fix issue #%d", issue_number)
     except Exception as exc:
         logger.error("Build check: failed to create GitHub issue: %s", exc)
 
@@ -178,9 +173,10 @@ async def run_project_build_check(
         logger.info("Build check (project): PASSED for %s/%s", owner, repo)
     else:
         await save_activity_log(project_id, seq, "Build check: FAILED", detail[-2000:], "ERROR")
-        await emit_error(project_id, "Build check failed — GitHub issue created")
         logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, detail[-200:])
-        await _create_build_failure_issue(project_id, owner, repo, default_branch, detail)
+        from orchestrator.api.websocket import emit_build_failed
+        summary = _extract_build_error(detail)
+        await emit_build_failed(project_id, summary, default_branch)
 
 
 async def run_build_check(

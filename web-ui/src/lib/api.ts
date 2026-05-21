@@ -279,3 +279,14 @@ export async function createIssueFromPrompt(
     body: JSON.stringify({ prompt }),
   });
 }
+
+export async function createBuildFailureIssue(
+  projectId: string,
+  errorSummary: string,
+  defaultBranch: string
+): Promise<{ status: string }> {
+  return request(`/api/projects/${projectId}/build-failure-issue`, {
+    method: "POST",
+    body: JSON.stringify({ error_summary: errorSummary, default_branch: defaultBranch }),
+  });
+}

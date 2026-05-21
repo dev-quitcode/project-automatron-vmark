@@ -83,6 +83,9 @@ interface ProjectState {
   implementWithAider: (projectId: string, issueNumber: number) => Promise<void>;
   triggerPRReview: (projectId: string, issueNumber: number, prNumber: number) => Promise<void>;
   createIssueFromPrompt: (projectId: string, prompt: string) => Promise<void>;
+  buildFailure: { errorSummary: string; defaultBranch: string } | null;
+  setBuildFailure: (f: { errorSummary: string; defaultBranch: string } | null) => void;
+  createBuildFailureIssue: (projectId: string) => Promise<void>;
 }
 
 function getHumanReason(stage?: ProjectStage | null): string | null {
@@ -121,6 +124,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   humanReason: null,
   humanStage: null,
   progress: null,
+  buildFailure: null,
 
   setProjects: (projects) => set({ projects }),
   setCurrentProject: (project) =>
@@ -488,6 +492,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   createIssueFromPrompt: async (projectId, prompt) => {
     try {
       await api.createIssueFromPrompt(projectId, prompt);
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  setBuildFailure: (f) => set({ buildFailure: f }),
+
+  createBuildFailureIssue: async (projectId) => {
+    const { buildFailure } = get();
+    if (!buildFailure) return;
+    try {
+      await api.createBuildFailureIssue(projectId, buildFailure.errorSummary, buildFailure.defaultBranch);
+      set({ buildFailure: null });
     } catch (error: any) {
       set({ error: error.message });
     }

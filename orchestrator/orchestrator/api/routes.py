@@ -293,6 +293,29 @@ async def api_run_build_check(project_id: str, background_tasks: BackgroundTasks
     return {"status": "started", "project_id": project_id}
 
 
+class CreateBuildFailureIssueRequest(BaseModel):
+    error_summary: str
+    default_branch: str = "main"
+
+
+@router.post("/projects/{project_id}/build-failure-issue")
+async def api_create_build_failure_issue(
+    project_id: str,
+    req: CreateBuildFailureIssueRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    project = await _get_required_project(project_id)
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        raise HTTPException(status_code=422, detail="Project has no GitHub repo configured")
+    from orchestrator.build_check import _create_build_failure_issue
+    background_tasks.add_task(
+        _create_build_failure_issue, project_id, owner, repo, req.default_branch, req.error_summary
+    )
+    return {"status": "creating"}
+
+
 @router.post("/projects/{project_id}/figma-file")
 async def api_upload_figma_file(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
     """Accept a .fig file, extract its document.json, summarise it, store as design context."""

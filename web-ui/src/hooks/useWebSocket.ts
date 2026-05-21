@@ -33,6 +33,7 @@ export function useWebSocket(projectId?: string) {
     setProgress,
     setIssues,
     updateIssue,
+    setBuildFailure,
   } = useProjectStore();
 
   useEffect(() => {
@@ -162,6 +163,14 @@ export function useWebSocket(projectId?: string) {
       }
     );
 
+    socket.on(
+      "build:failed",
+      (data: { project_id: string; error_summary: string; default_branch: string }) => {
+        if (projectId && data.project_id !== projectId) return;
+        setBuildFailure({ errorSummary: data.error_summary, defaultBranch: data.default_branch });
+      }
+    );
+
     return () => {
       socket.off("connect");
       socket.off("disconnect");
@@ -173,6 +182,7 @@ export function useWebSocket(projectId?: string) {
       socket.off("run:error");
       socket.off("issues:updated");
       socket.off("pr:review_ready");
+      socket.off("build:failed");
       disconnectSocket();
     };
   }, [
@@ -186,6 +196,7 @@ export function useWebSocket(projectId?: string) {
     setPlanMd,
     setProgress,
     updateIssue,
+    setBuildFailure,
   ]);
 
   useEffect(() => {

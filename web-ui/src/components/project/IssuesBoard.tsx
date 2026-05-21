@@ -5,7 +5,7 @@ import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send, Hammer,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send, Hammer, XCircle, X,
 } from "lucide-react";
 
 interface IssuesBoardProps {
@@ -27,12 +27,16 @@ interface IssuesBoardProps {
   isAuditing: boolean;
   isCreatingIssue: boolean;
   isCheckingBuild: boolean;
+  buildFailure: { errorSummary: string; defaultBranch: string } | null;
+  onCreateBuildIssue: () => void;
+  onDismissBuildFailure: () => void;
 }
 
 export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
   onImplementAider, onCreateIssue, onBuildCheck, reviewingIssues, assigningIssues, implementingIssues,
   isSyncing, isAuditing, isCreatingIssue, isCheckingBuild,
+  buildFailure, onCreateBuildIssue, onDismissBuildFailure,
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
@@ -181,6 +185,32 @@ export function IssuesBoard({
         <div className="h-full rounded-full bg-primary transition-all"
           style={{ width: `${issues.length > 0 ? (totalDone / issues.length) * 100 : 0}%` }} />
       </div>
+
+      {/* Build failure banner */}
+      {buildFailure && (
+        <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <XCircle className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+              <span className="text-sm font-medium text-red-400">
+                Build failed on {buildFailure.defaultBranch}
+              </span>
+            </div>
+            <button onClick={onDismissBuildFailure} className="text-muted-foreground hover:text-foreground">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <pre className="rounded-md bg-black/20 px-3 py-2 text-xs text-red-300 whitespace-pre-wrap overflow-auto max-h-32">
+            {buildFailure.errorSummary}
+          </pre>
+          <div className="flex justify-end">
+            <button onClick={onCreateBuildIssue}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-500/10 border border-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 transition-colors">
+              <Plus className="h-3 w-3" /> Create GitHub Issue
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Preview bar — always available */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">

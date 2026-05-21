@@ -187,3 +187,16 @@ async def emit_pr_review_ready(
         },
         room=_project_room(project_id),
     )
+
+
+async def emit_build_failed(project_id: str, error_summary: str, default_branch: str) -> None:
+    """Fires when a post-merge build check fails — lets the frontend ask the user before creating an issue."""
+    await sio.emit(
+        "build:failed",
+        {
+            "project_id": project_id,
+            "error_summary": error_summary,
+            "default_branch": default_branch,
+        },
+        room=_project_room(project_id),
+    )
