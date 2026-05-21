@@ -148,6 +148,59 @@ async def _fix_nextjs_page_paths(repo_dir: Path, default_branch: str) -> int:
     return fixes
 
 
+async def _fill_missing_files(
+    repo_dir: Path,
+    missing: list[str],
+    issue_body: str,
+    model: str,
+    env: dict[str, str],
+) -> int:
+    """Run a focused diff-mode Aider pass to create files the main run missed (token limit).
+
+    Returns the number of files that now exist with real content.
+    """
+    import shutil
+
+    for fp in missing:
+        abs_fp = repo_dir / fp
+        abs_fp.parent.mkdir(parents=True, exist_ok=True)
+        if not abs_fp.exists():
+            abs_fp.touch()
+
+    missing_list = "\n".join(f"- {fp}" for fp in missing)
+    task = (
+        f"These files were required by the task but are still missing or empty. "
+        f"Create each one now following the patterns described in the original task.\n\n"
+        f"Missing files:\n{missing_list}\n\n"
+        f"Original task context:\n{issue_body[:2000]}"
+    )
+
+    fill_args = [
+        "--model", model,
+        "--message", task,
+        "--edit-format", "diff",
+        "--yes", "--no-pretty", "--no-check-update", "--no-show-model-warnings",
+        "--map-tokens", "4096", "--git", "--auto-commits",
+    ]
+    for fp in missing:
+        fill_args.extend(["--file", fp])
+
+    if shutil.which("aider"):
+        cmd = ["aider", *fill_args]
+    elif shutil.which("uvx"):
+        cmd = ["uvx", "aider-chat", *fill_args]
+    else:
+        cmd = ["uv", "tool", "run", "aider-chat", *fill_args]
+
+    rc, out = await _run_aider(cmd, cwd=repo_dir, env=env)
+    logger.info("Aider fill-missing run (rc=%d):\n%s", rc, out[-1000:])
+
+    return sum(
+        1 for fp in missing
+        if (repo_dir / fp).exists() and (repo_dir / fp).stat().st_size >= 20
+    )
+
+
 async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
     """Detect files committed at paths with duplicated segments and move them.
 
@@ -498,6 +551,23 @@ async def implement_issue(
     fixed_nextjs = await _fix_nextjs_page_paths(repo_dir, default_branch)
     if fixed_nextjs:
         logger.info("Aider: moved %d misplaced Next.js page file(s) for issue #%d", fixed_nextjs, issue_number)
+
+    # Fill any files that Aider missed due to output-token limit (whole-mode truncation)
+    if not is_reimplementation and file_paths:
+        missing_files = [
+            fp for fp in file_paths
+            if not (repo_dir / fp).exists() or (repo_dir / fp).stat().st_size < 20
+        ]
+        if missing_files:
+            logger.warning(
+                "Aider: %d required file(s) still missing after main run for issue #%d — %s",
+                len(missing_files), issue_number, missing_files,
+            )
+            filled = await _fill_missing_files(repo_dir, missing_files, issue_body, model, env)
+            logger.info(
+                "Aider: fill pass created %d/%d missing file(s) for issue #%d",
+                filled, len(missing_files), issue_number,
+            )
 
     # Pre-push build validation — catch broken code before it reaches GitHub.
     # Skip gracefully when Docker is unavailable (build check is best-effort).
