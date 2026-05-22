@@ -171,6 +171,8 @@ async def run_project_build_check(
     if passed:
         await save_activity_log(project_id, seq, "Build check: PASSED", detail[-2000:], "INFO")
         logger.info("Build check (project): PASSED for %s/%s", owner, repo)
+        from orchestrator.api.websocket import emit_build_passed
+        await emit_build_passed(project_id, default_branch)
     else:
         await save_activity_log(project_id, seq, "Build check: FAILED", detail[-2000:], "ERROR")
         logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, detail[-200:])

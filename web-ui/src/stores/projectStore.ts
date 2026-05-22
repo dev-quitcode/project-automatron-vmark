@@ -86,6 +86,8 @@ interface ProjectState {
   buildFailure: { errorSummary: string; defaultBranch: string } | null;
   setBuildFailure: (f: { errorSummary: string; defaultBranch: string } | null) => void;
   createBuildFailureIssue: (projectId: string) => Promise<void>;
+  buildPassed: string | null;
+  setBuildPassed: (branch: string | null) => void;
 }
 
 function getHumanReason(stage?: ProjectStage | null): string | null {
@@ -125,6 +127,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   humanStage: null,
   progress: null,
   buildFailure: null,
+  buildPassed: null,
 
   setProjects: (projects) => set({ projects }),
   setCurrentProject: (project) =>
@@ -498,6 +501,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   setBuildFailure: (f) => set({ buildFailure: f }),
+  setBuildPassed: (branch) => set({ buildPassed: branch }),
 
   createBuildFailureIssue: async (projectId) => {
     const { buildFailure } = get();

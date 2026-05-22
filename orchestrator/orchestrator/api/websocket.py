@@ -200,3 +200,12 @@ async def emit_build_failed(project_id: str, error_summary: str, default_branch:
         },
         room=_project_room(project_id),
     )
+
+
+async def emit_build_passed(project_id: str, default_branch: str) -> None:
+    """Fires when a post-merge build check passes."""
+    await sio.emit(
+        "build:passed",
+        {"project_id": project_id, "default_branch": default_branch},
+        room=_project_room(project_id),
+    )

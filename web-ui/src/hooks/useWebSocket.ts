@@ -34,6 +34,7 @@ export function useWebSocket(projectId?: string) {
     setIssues,
     updateIssue,
     setBuildFailure,
+    setBuildPassed,
   } = useProjectStore();
 
   useEffect(() => {
@@ -171,6 +172,15 @@ export function useWebSocket(projectId?: string) {
       }
     );
 
+    socket.on(
+      "build:passed",
+      (data: { project_id: string; default_branch: string }) => {
+        if (projectId && data.project_id !== projectId) return;
+        setBuildPassed(data.default_branch);
+        setTimeout(() => setBuildPassed(null), 6000);
+      }
+    );
+
     return () => {
       socket.off("connect");
       socket.off("disconnect");
@@ -183,6 +193,7 @@ export function useWebSocket(projectId?: string) {
       socket.off("issues:updated");
       socket.off("pr:review_ready");
       socket.off("build:failed");
+      socket.off("build:passed");
       disconnectSocket();
     };
   }, [
@@ -197,6 +208,7 @@ export function useWebSocket(projectId?: string) {
     setProgress,
     updateIssue,
     setBuildFailure,
+    setBuildPassed,
   ]);
 
   useEffect(() => {

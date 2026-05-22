@@ -136,6 +136,8 @@ export default function ProjectPage() {
     buildFailure,
     setBuildFailure,
     createBuildFailureIssue,
+    buildPassed,
+    setBuildPassed,
   } = useProjectStore();
   const targetSummaryKey = JSON.stringify(currentProject?.deploy_target_summary ?? null);
 
@@ -902,6 +904,8 @@ export default function ProjectPage() {
               buildFailure={buildFailure}
               onCreateBuildIssue={() => void createBuildFailureIssue(projectId)}
               onDismissBuildFailure={() => setBuildFailure(null)}
+              buildPassed={buildPassed}
+              onDismissBuildPassed={() => setBuildPassed(null)}
             />
           </div>
         )}

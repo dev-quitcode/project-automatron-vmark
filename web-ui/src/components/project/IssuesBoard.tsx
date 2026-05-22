@@ -5,7 +5,7 @@ import type { GithubIssue } from "@/lib/types";
 import { IssueCard } from "./IssueCard";
 import {
   ExternalLink, RefreshCw, ChevronDown, ChevronRight,
-  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send, Hammer, XCircle, X,
+  ScanSearch, GitPullRequest, GitMerge, Circle, CheckCircle2, Monitor, Loader2, Plus, Send, Hammer, XCircle, X, CircleCheck,
 } from "lucide-react";
 
 interface IssuesBoardProps {
@@ -30,6 +30,8 @@ interface IssuesBoardProps {
   buildFailure: { errorSummary: string; defaultBranch: string } | null;
   onCreateBuildIssue: () => void;
   onDismissBuildFailure: () => void;
+  buildPassed: string | null;
+  onDismissBuildPassed: () => void;
 }
 
 export function IssuesBoard({
@@ -37,6 +39,7 @@ export function IssuesBoard({
   onImplementAider, onCreateIssue, onBuildCheck, reviewingIssues, assigningIssues, implementingIssues,
   isSyncing, isAuditing, isCreatingIssue, isCheckingBuild,
   buildFailure, onCreateBuildIssue, onDismissBuildFailure,
+  buildPassed, onDismissBuildPassed,
 }: IssuesBoardProps) {
 
   const [isStartingPreview, setIsStartingPreview] = useState(false);
@@ -185,6 +188,21 @@ export function IssuesBoard({
         <div className="h-full rounded-full bg-primary transition-all"
           style={{ width: `${issues.length > 0 ? (totalDone / issues.length) * 100 : 0}%` }} />
       </div>
+
+      {/* Build success banner — auto-dismisses after 6s */}
+      {buildPassed && (
+        <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <CircleCheck className="h-4 w-4 shrink-0 text-green-400" />
+            <span className="text-sm font-medium text-green-400">
+              Build passed on {buildPassed}
+            </span>
+          </div>
+          <button onClick={onDismissBuildPassed} className="text-muted-foreground hover:text-foreground">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Build failure banner */}
       {buildFailure && (
