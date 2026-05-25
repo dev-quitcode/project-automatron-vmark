@@ -224,7 +224,7 @@ async def run_preview_locally(
 
     client.close()
 
-    # Use public hostname when deployed, localhost when running locally
+    # Public URL shown to users
     from urllib.parse import urlparse
     public = (settings.automatron_public_url or "").rstrip("/")
     if public:
@@ -232,20 +232,21 @@ async def run_preview_locally(
     else:
         host = "localhost"
     preview_url = f"http://{host}:{port}"
-    logger.info("Preview: container started, polling %s", preview_url)
 
-    # Wait up to 60s for the app to be reachable
+    # Health-check using localhost — containers can't reach the public hostname via hairpin NAT
+    health_url = f"http://localhost:{port}"
+    logger.info("Preview: container started, polling %s", health_url)
+
     for attempt in range(20):
         await asyncio.sleep(3)
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(preview_url)
+                resp = await client.get(health_url)
                 if resp.status_code < 500:
                     logger.info("Preview: ready at %s (attempt %d)", preview_url, attempt + 1)
                     return preview_url
         except Exception:
             pass
 
-    # Return URL anyway — app may still be starting
     logger.warning("Preview: health check timed out, returning URL anyway: %s", preview_url)
     return preview_url
