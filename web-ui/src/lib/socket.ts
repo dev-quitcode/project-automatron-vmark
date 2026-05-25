@@ -7,6 +7,7 @@ let socket: Socket | null = null;
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(WS_URL, {
+      path: "/socket.io/",
       transports: ["polling", "websocket"],
       autoConnect: false,
       reconnection: true,
