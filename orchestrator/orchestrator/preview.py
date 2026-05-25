@@ -197,7 +197,12 @@ async def run_preview_locally(
                 if line:
                     logger.debug("Preview build: %s", line)
     except docker_sdk.errors.BuildError as exc:
-        logger.error("Preview: docker build failed: %s", exc)
+        build_output = "\n".join(
+            chunk.get("stream", chunk.get("error", "")).rstrip()
+            for chunk in exc.build_log
+            if chunk.get("stream") or chunk.get("error")
+        )
+        logger.error("Preview: docker build failed:\n%s", build_output[-3000:])
         client.close()
         return None
 

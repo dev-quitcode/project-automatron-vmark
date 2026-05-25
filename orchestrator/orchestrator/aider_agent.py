@@ -619,6 +619,15 @@ async def implement_issue(
     else:
         logger.info("Aider: pre-push build PASSED for issue #%d", issue_number)
 
+    # Remove any accidentally committed large files / node_modules before pushing
+    await _run(["git", "rm", "-r", "--cached", "--ignore-unmatch",
+                "node_modules", ".next", ".nuxt", "dist", "__pycache__",
+                "*.node", "*.pyc"], cwd=repo_dir)
+    # Re-check if that produced a diff worth committing
+    rc_status, status_out = await _run(["git", "status", "--porcelain"], cwd=repo_dir)
+    if status_out.strip():
+        await _run(["git", "commit", "-m", "chore: remove large/generated files from tracking"], cwd=repo_dir)
+
     # Push branch
     await _run(["git", "remote", "set-url", "origin", authed_url], cwd=repo_dir)
     rc, push_out = await _run(
