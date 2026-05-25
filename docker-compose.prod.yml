@@ -10,7 +10,7 @@ services:
       - default
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.automatron-api.rule=Host(`automatron.quitcode.com`) && (PathPrefix(`/api`) || Path(`/health`) || PathPrefix(`/socket.io`))"
+      - "traefik.http.routers.automatron-api.rule=Host(`automatron.quitcode.com`) && (PathPrefix(`/api`) || Path(`/health`) || PathPrefix(`/socket.io/`) || Path(`/socket.io`))"
       - "traefik.http.routers.automatron-api.entrypoints=websecure"
       - "traefik.http.routers.automatron-api.tls.certresolver=le"
       - "traefik.http.routers.automatron-api.priority=10"
