@@ -246,10 +246,23 @@ export function IssuesBoard({
           )}
         </div>
         {previewUrl ? (
-          <a href={previewUrl} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-            <ExternalLink className="h-3 w-3" /> Open Preview
-          </a>
+          <div className="flex items-center gap-2">
+            {isStartingPreview ? (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground opacity-60">
+                <Loader2 className="h-3 w-3 animate-spin" /> Rebuilding…
+              </span>
+            ) : (
+              <button onClick={handleStartPreview}
+                title="Pull latest main and rebuild the preview container"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                <Loader2 className="h-3 w-3" /> Rebuild
+              </button>
+            )}
+            <a href={previewUrl} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+              <ExternalLink className="h-3 w-3" /> Open Preview
+            </a>
+          </div>
         ) : isStartingPreview ? (
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground opacity-60">
             <Loader2 className="h-3 w-3 animate-spin" /> Building…
