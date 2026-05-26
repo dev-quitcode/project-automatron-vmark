@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from urllib.parse import parse_qs
 
 from orchestrator.api.socket_server import sio
-from orchestrator.models.project import save_chat_message
+from orchestrator.models.project import get_project, save_chat_message
 from orchestrator.observability import trace_event
 
 logger = logging.getLogger(__name__)
+
+# Stages where chat messages should be routed to the post-build feedback classifier
+# rather than left as inert "queued" notes. Anything from plan-approval onward.
+_FEEDBACK_STAGES = {
+    "awaiting_plan_approval",
+    "building",
+    "awaiting_preview_approval",
+    "preview",
+    "running",
+    "deploying",
+    "deployed",
+    "error",
+}
 
 
 def _project_room(project_id: str) -> str:
@@ -60,11 +74,26 @@ async def on_chat_message(sid: str, data: dict) -> None:
         "chat.message.received",
         {"text": text},
     )
+
+    # Route based on project stage: planning chat → no-op (architect already streaming),
+    # post-planning chat → feedback classifier that creates issues / asks clarification.
+    project = await get_project(project_id)
+    stage = (project or {}).get("project_stage", "intake")
+
+    if stage in _FEEDBACK_STAGES:
+        # Run in background so the socket handler returns immediately
+        from orchestrator.orchestrator import GitHubOrchestrator
+        asyncio.create_task(
+            GitHubOrchestrator(project_id).process_feedback_message(text)
+        )
+        return
+
+    # Pre-planning chat: acknowledge but don't act (the architect run will pick it up)
     await sio.emit(
         "architect:message",
         {
             "project_id": project_id,
-            "content": f"[Automatron] Message queued for the next planning/build review:\n\n{text}",
+            "content": f"[Automatron] Message queued for the next planning run:\n\n{text}",
             "is_streaming": False,
         },
         room=_project_room(project_id),

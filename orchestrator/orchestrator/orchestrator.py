@@ -1027,6 +1027,151 @@ class GitHubOrchestrator:
             {"issue_number": issue_number, "pr_number": pr_number, "passed": passed},
         )
 
+    # ── Post-build feedback loop ──────────────────────────────────────────────
+
+    async def process_feedback_message(self, message: str) -> None:
+        """Classify a user chat message into issues / epic / clarify and act on it.
+
+        Called when a chat message arrives after the project has passed initial planning.
+        The architect LLM decides whether the message describes concrete change(s), needs
+        clarification, or is a major feature requiring an epic + sub-tasks.
+        """
+        from orchestrator.models.project import create_github_issue, list_github_issues
+
+        project = await self._project()
+        owner = project.get("github_repo_owner") or ""
+        repo = project.get("github_repo_name") or ""
+        if not owner or not repo:
+            await emit_architect_message(
+                self.project_id,
+                "I can't act on feedback yet — no GitHub repo is wired up for this project.",
+            )
+            return
+
+        self._set_trace("feedback", "architect")
+        await self._log("Classifying feedback message", message[:120], "RUNNING")
+
+        # Build context for the classifier
+        plan_excerpt = (project.get("plan_md") or "")[:4000] or "(no plan yet)"
+        existing_issues = await list_github_issues(self.project_id)
+        recent_issues = "\n".join(
+            f"- #{i.get('issue_number')} [{i.get('status', '?')}] {i.get('title', '')}"
+            for i in existing_issues[-10:]
+        ) or "(no issues yet)"
+        stack_summary = await _build_stack_summary(self.gh, owner, repo) or "(stack unknown)"
+
+        # Live schema (only if user provided Supabase creds at project creation)
+        schema_context = "(not available — pass supabase creds at project creation to enable)"
+        supabase_url = (project.get("supabase_url") or "").strip()
+        supabase_key = (project.get("supabase_service_role_key") or "").strip()
+        if supabase_url and supabase_key:
+            schema_context = await _introspect_supabase_schema(supabase_url, supabase_key)
+
+        prompt_tpl = _load_prompt("feedback_classifier_v1.txt")
+        user_msg = prompt_tpl.format(
+            message=message,
+            plan_excerpt=plan_excerpt,
+            recent_issues=recent_issues,
+            stack_context=stack_summary,
+            schema_context=schema_context,
+        )
+
+        llm_cfg = await self._llm_config()
+        model = llm_cfg["architect"]["model"]
+
+        try:
+            raw = await call_llm(
+                [
+                    SystemMessage(content="You output only valid JSON, no markdown fences, no preamble."),
+                    HumanMessage(content=user_msg),
+                ],
+                model=model,
+                max_tokens=4000,
+                trace_context={**self._trace_ctx, "actor": "architect", "prompt_name": "feedback_classifier_v1"},
+            )
+        except Exception as exc:
+            logger.exception("feedback: LLM call failed")
+            await emit_architect_message(
+                self.project_id,
+                f"Sorry — I couldn't process that feedback ({exc}). Try rephrasing or check the orchestrator logs.",
+            )
+            return
+
+        try:
+            spec = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            await self._log("feedback: invalid JSON from LLM", raw[:300], "ERROR")
+            await emit_architect_message(
+                self.project_id,
+                "I had trouble parsing my own response. Please rephrase the request.",
+            )
+            return
+
+        kind = spec.get("kind", "clarify")
+        chat_response = spec.get("chat_response") or "(no response)"
+        issues = spec.get("issues") or []
+
+        if kind == "clarify" or not issues:
+            await emit_architect_message(self.project_id, chat_response)
+            await self._log("feedback: clarification requested", chat_response[:200], "INFO")
+            return
+
+        # Create issues on GitHub + persist locally
+        created_numbers: list[int] = []
+        milestone_id: int | None = None
+        if kind == "epic" and len(issues) > 1:
+            epic_title = issues[0].get("title", "New epic")
+            try:
+                ms = await self.gh.create_milestone(owner, repo, title=epic_title)
+                milestone_id = ms.get("number")
+            except Exception as exc:
+                logger.warning("feedback: milestone creation failed: %s", exc)
+
+        for issue_spec in issues:
+            title = issue_spec.get("title", message[:80])
+            epic = issue_spec.get("epic") or "Feedback"
+            body = _render_issue_body(issue_spec, epic, "", stack_summary)
+            labels = issue_spec.get("labels") or ["enhancement"]
+            try:
+                gh_issue = await self.gh.create_issue(
+                    owner, repo,
+                    title=title, body=body,
+                    labels=labels,
+                    milestone_number=milestone_id,
+                )
+            except Exception as exc:
+                logger.exception("feedback: failed to create GitHub issue '%s'", title)
+                await emit_architect_message(
+                    self.project_id,
+                    f"Failed to create issue '{title}': {exc}",
+                )
+                continue
+
+            issue_number = gh_issue["number"]
+            html_url = gh_issue["html_url"]
+            await create_github_issue(
+                str(uuid.uuid4()),
+                self.project_id,
+                issue_number,
+                title,
+                epic=epic,
+                copilot_workspace_url=html_url,
+            )
+            created_numbers.append(issue_number)
+
+        updated_issues = await list_github_issues(self.project_id)
+        await emit_issues_updated(self.project_id, updated_issues)
+        await emit_architect_message(self.project_id, chat_response)
+        await self._log(
+            f"Feedback processed: {kind}",
+            f"Created issues: {created_numbers}",
+            "SUCCESS" if created_numbers else "INFO",
+        )
+        await trace_event(
+            self.project_id, "architect", "feedback.processed",
+            {"kind": kind, "issues_created": created_numbers},
+        )
+
     # ── Stage 5: Audit codebase and create fix issues ────────────────────────
 
     async def audit_codebase(self) -> None:

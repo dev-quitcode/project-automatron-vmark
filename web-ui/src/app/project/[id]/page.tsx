@@ -869,6 +869,16 @@ export default function ProjectPage() {
             messages={chatMessages}
             onSendMessage={sendMessage}
             disabled={!currentProject}
+            placeholder={
+              currentProject &&
+              ![
+                "intake",
+                "planning",
+                "awaiting_plan_approval",
+              ].includes(currentProject.project_stage || "")
+                ? "Request a change or report a bug — Automatron will draft GitHub issues for your review."
+                : undefined
+            }
           />
         )}
 

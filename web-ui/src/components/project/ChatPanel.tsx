@@ -10,12 +10,14 @@ interface ChatPanelProps {
   messages: ChatMessage[];
   onSendMessage: (message: string) => void;
   disabled?: boolean;
+  placeholder?: string;
 }
 
 export function ChatPanel({
   messages,
   onSendMessage,
   disabled = false,
+  placeholder,
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -132,7 +134,7 @@ export function ChatPanel({
             placeholder={
               disabled
                 ? "Chat disabled while processing..."
-                : "Message the Architect..."
+                : placeholder ?? "Message the Architect..."
             }
             disabled={disabled}
             className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
