@@ -1086,7 +1086,7 @@ class GitHubOrchestrator:
                     HumanMessage(content=user_msg),
                 ],
                 model=model,
-                max_tokens=4000,
+                max_tokens=16000,
                 trace_context={**self._trace_ctx, "actor": "architect", "prompt_name": "feedback_classifier_v1"},
             )
         except Exception as exc:
@@ -1100,7 +1100,7 @@ class GitHubOrchestrator:
         try:
             spec = json.loads(raw.strip())
         except json.JSONDecodeError:
-            await self._log("feedback: invalid JSON from LLM", raw[:300], "ERROR")
+            await self._log("feedback: invalid JSON from LLM", raw[-800:], "ERROR")
             await emit_architect_message(
                 self.project_id,
                 "I had trouble parsing my own response. Please rephrase the request.",
