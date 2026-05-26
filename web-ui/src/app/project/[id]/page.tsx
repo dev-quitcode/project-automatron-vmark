@@ -365,7 +365,7 @@ export default function ProjectPage() {
   const isDeployed = currentProject?.project_stage === "deployed";
   const deployConfigured = Boolean(currentProject?.deploy_target_summary?.host);
   const canRestartPreview =
-    Boolean(currentProject?.container_id) &&
+    Boolean(currentProject?.container_id || currentProject?.preview_url) &&
     (currentProject?.status === "preview" ||
       ["awaiting_preview_approval", "ready_for_deploy", "deployed"].includes(
         currentProject?.project_stage || ""
