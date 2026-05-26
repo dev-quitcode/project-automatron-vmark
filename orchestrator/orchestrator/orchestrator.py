@@ -1097,10 +1097,17 @@ class GitHubOrchestrator:
             )
             return
 
+        # Strip ```json / ``` fences defensively — the model ignores the "no fences"
+        # instruction often enough that this is worth doing always.
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+
         try:
-            spec = json.loads(raw.strip())
+            spec = json.loads(cleaned)
         except json.JSONDecodeError:
-            await self._log("feedback: invalid JSON from LLM", raw[-800:], "ERROR")
+            await self._log("feedback: invalid JSON from LLM", cleaned[-800:], "ERROR")
             await emit_architect_message(
                 self.project_id,
                 "I had trouble parsing my own response. Please rephrase the request.",
