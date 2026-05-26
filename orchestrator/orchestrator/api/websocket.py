@@ -13,18 +13,9 @@ from orchestrator.observability import trace_event
 
 logger = logging.getLogger(__name__)
 
-# Stages where chat messages should be routed to the post-build feedback classifier
-# rather than left as inert "queued" notes. Anything from plan-approval onward.
-_FEEDBACK_STAGES = {
-    "awaiting_plan_approval",
-    "building",
-    "awaiting_preview_approval",
-    "preview",
-    "running",
-    "deploying",
-    "deployed",
-    "error",
-}
+# Stages where chat messages should remain inert ("queued for next planning run").
+# Anything else routes to the post-build feedback classifier.
+_PLANNING_STAGES = {"intake", "planning"}
 
 
 def _project_room(project_id: str) -> str:
@@ -75,20 +66,23 @@ async def on_chat_message(sid: str, data: dict) -> None:
         {"text": text},
     )
 
-    # Route based on project stage: planning chat → no-op (architect already streaming),
-    # post-planning chat → feedback classifier that creates issues / asks clarification.
+    # Route based on project stage: pre-planning chat → no-op (architect will pick it
+    # up on the next run). Anything else → feedback classifier that creates issues or
+    # asks clarification.
     project = await get_project(project_id)
     stage = (project or {}).get("project_stage", "intake")
 
-    if stage in _FEEDBACK_STAGES:
+    if stage not in _PLANNING_STAGES:
         # Run in background so the socket handler returns immediately
         from orchestrator.orchestrator import GitHubOrchestrator
+        logger.info("chat: routing message to feedback classifier (stage=%s)", stage)
         asyncio.create_task(
             GitHubOrchestrator(project_id).process_feedback_message(text)
         )
         return
 
     # Pre-planning chat: acknowledge but don't act (the architect run will pick it up)
+    logger.info("chat: queuing message for next planning run (stage=%s)", stage)
     await sio.emit(
         "architect:message",
         {
