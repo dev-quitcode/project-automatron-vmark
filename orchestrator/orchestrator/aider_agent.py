@@ -98,6 +98,68 @@ _NEXTJS_ROUTE_FILES = {
 }
 
 
+async def _baseline_branch_builds(
+    workspace: Path,
+    authed_url: str,
+    default_branch: str,
+) -> bool:
+    """Return True if the project's default branch builds clean.
+
+    Used to decide whether to block a failing PR push. If main itself is broken,
+    blocking PRs makes nothing land — so we only block when main is known-good.
+    Result is uncached: builds are slow but safer than acting on stale state.
+    """
+    from orchestrator.build_check import run_build_in_docker
+    baseline_dir = workspace / "baseline-check-repo"
+    if (baseline_dir / ".git").exists():
+        await _run(["git", "remote", "set-url", "origin", authed_url], cwd=baseline_dir)
+        await _run(["git", "fetch", "origin", default_branch], cwd=baseline_dir, timeout=60)
+        await _run(["git", "checkout", default_branch], cwd=baseline_dir)
+        rc, _ = await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=baseline_dir)
+    else:
+        rc, _ = await _run(["git", "clone", "--branch", default_branch, authed_url, str(baseline_dir)], timeout=120)
+    if rc != 0:
+        logger.warning("Aider baseline: clone/sync failed — treating main as broken (push will be allowed)")
+        return False
+    passed, _ = await run_build_in_docker(baseline_dir)
+    return passed
+
+
+def _is_file_empty_or_unparseable(path: Path) -> bool:
+    """Return True if the file is missing, near-empty, or has no recognizable code structure.
+
+    Used to detect files that Aider created as placeholders but never filled. We don't
+    full-parse — we just look for the keywords every real source file would have.
+    """
+    if not path.exists():
+        return True
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return True
+    if size < 20:
+        return True
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return True
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        import ast
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return True
+        # Empty module or only string literals / pass
+        meaningful = [n for n in tree.body if not isinstance(n, (ast.Expr, ast.Pass))]
+        return not meaningful
+    if suffix in (".ts", ".tsx", ".js", ".jsx"):
+        # Lightweight check — real source files always have at least one of these
+        keywords = ("export", "import", "function", "const ", "let ", "class ", "interface ", "type ", "enum ")
+        return not any(k in text for k in keywords)
+    return False
+
+
 async def _fix_nextjs_page_paths(repo_dir: Path, default_branch: str) -> int:
     """Move Next.js routing files that Aider placed outside the app directory.
 
@@ -552,20 +614,30 @@ async def implement_issue(
     if fixed_nextjs:
         logger.info("Aider: moved %d misplaced Next.js page file(s) for issue #%d", fixed_nextjs, issue_number)
 
-    # Fill any files that Aider missed due to output-token limit (whole-mode truncation)
-    if not is_reimplementation and file_paths:
+    # Fill any files that Aider missed due to output-token limit (whole-mode truncation).
+    # Two sources of "missing": (a) files declared in the issue body's file_paths, and
+    # (b) files Aider touched in the commit but left empty / unparseable.
+    if not is_reimplementation:
+        candidate_files: set[str] = set()
+        for fp in file_paths:
+            candidate_files.add(fp)
+        # Walk every file Aider committed on this branch
+        for fp in meaningful_files:
+            if fp.endswith((".ts", ".tsx", ".js", ".jsx", ".py")):
+                candidate_files.add(fp)
+
         missing_files = [
-            fp for fp in file_paths
-            if not (repo_dir / fp).exists() or (repo_dir / fp).stat().st_size < 20
+            fp for fp in candidate_files
+            if _is_file_empty_or_unparseable(repo_dir / fp)
         ]
         if missing_files:
             logger.warning(
-                "Aider: %d required file(s) still missing after main run for issue #%d — %s",
+                "Aider: %d file(s) empty or unparseable after main run for issue #%d — %s",
                 len(missing_files), issue_number, missing_files,
             )
             filled = await _fill_missing_files(repo_dir, missing_files, issue_body, model, env)
             logger.info(
-                "Aider: fill pass created %d/%d missing file(s) for issue #%d",
+                "Aider: fill pass repaired %d/%d file(s) for issue #%d",
                 filled, len(missing_files), issue_number,
             )
 
@@ -607,11 +679,21 @@ async def implement_issue(
 
         build_passed2, build_output2 = await run_build_in_docker(repo_dir)
         if not build_passed2:
-            # Push anyway — the user can review what Aider did. Blocking the push entirely
-            # means nothing reaches GitHub even when the Aider change is directionally correct
-            # but the repo has pre-existing or unrelated compile errors.
+            # Only block the push when main is known to build. If main itself is broken,
+            # blocking would prevent any fix-the-build PRs from landing.
+            main_builds = await _baseline_branch_builds(workspace, authed_url, default_branch)
+            if main_builds:
+                logger.error(
+                    "Aider: build failing on this PR but main is clean — blocking push for issue #%d",
+                    issue_number,
+                )
+                from orchestrator.api.websocket import emit_aider_needs_help
+                from orchestrator.build_check import _extract_build_error as _xerr
+                summary = _xerr(build_output2)
+                await emit_aider_needs_help(project_id, issue_number, summary)
+                return None, f"Pre-push build failed and main is clean — Aider needs human help.\n\n{summary[-2000:]}"
             logger.warning(
-                "Aider: build still failing after retry for issue #%d — pushing for review",
+                "Aider: build still failing after retry for issue #%d — main is also broken, pushing for review",
                 issue_number,
             )
         else:

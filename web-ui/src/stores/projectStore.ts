@@ -56,7 +56,8 @@ interface ProjectState {
     name: string,
     repoUrl: string,
     llmConfig: ProjectLlmConfig,
-    figmaUrls?: string[]
+    figmaUrls?: string[],
+    supabase?: { url: string; serviceRoleKey: string; anonKey: string }
   ) => Promise<Project>;
   startProject: (id: string) => Promise<void>;
   stopProject: (id: string) => Promise<void>;
@@ -214,7 +215,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  createProject: async (name, repoUrl, llmConfig, figmaUrls) => {
+  createProject: async (name, repoUrl, llmConfig, figmaUrls, supabase) => {
     set({ isLoading: true, error: null });
     try {
       const project = await api.createProject({
@@ -223,6 +224,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         source: "manual",
         llm_config: llmConfig,
         figma_urls: figmaUrls?.filter(Boolean) ?? [],
+        supabase_url: supabase?.url?.trim() || undefined,
+        supabase_service_role_key: supabase?.serviceRoleKey?.trim() || undefined,
+        supabase_anon_key: supabase?.anonKey?.trim() || undefined,
       });
       set((state) => ({
         projects: [...state.projects, project],

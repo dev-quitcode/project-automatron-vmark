@@ -43,6 +43,9 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
   >({});
   const [figmaUrls, setFigmaUrls] = useState<string[]>([]);
   const [figmaFile, setFigmaFile] = useState<File | null>(null);
+  const [supabaseUrl, setSupabaseUrl] = useState("");
+  const [supabaseServiceKey, setSupabaseServiceKey] = useState("");
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { createProject } = useProjectStore();
 
@@ -90,7 +93,15 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
 
     setIsSubmitting(true);
     try {
-      const project = await createProject(name.trim(), repoUrl.trim(), llmConfig, figmaUrls.filter(Boolean));
+      const project = await createProject(
+        name.trim(),
+        repoUrl.trim(),
+        llmConfig,
+        figmaUrls.filter(Boolean),
+        supabaseUrl.trim() || supabaseServiceKey.trim() || supabaseAnonKey.trim()
+          ? { url: supabaseUrl, serviceRoleKey: supabaseServiceKey, anonKey: supabaseAnonKey }
+          : undefined,
+      );
       if (figmaFile && project?.id) {
         await api.uploadFigmaFile(project.id, figmaFile);
       }
@@ -99,6 +110,9 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
       setNameDirty(false);
       setFigmaUrls([]);
       setFigmaFile(null);
+      setSupabaseUrl("");
+      setSupabaseServiceKey("");
+      setSupabaseAnonKey("");
       setLlmConfig(cloneProjectLlmConfig(defaultProjectLlmConfig));
       onClose();
     } catch {
@@ -233,6 +247,55 @@ export function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
                   />
                 </label>
               )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-background/60 p-4">
+            <div>
+              <h3 className="text-sm font-semibold">Supabase (optional)</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Provide your Supabase credentials so Automatron can introspect the live database schema
+                and generate code against your real tables — not guesses from migration files.
+              </p>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Project URL
+                </label>
+                <input
+                  type="text"
+                  value={supabaseUrl}
+                  onChange={(e) => setSupabaseUrl(e.target.value)}
+                  placeholder="https://xxxxx.supabase.co"
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Service Role Key (used only for schema introspection)
+                </label>
+                <input
+                  type="password"
+                  value={supabaseServiceKey}
+                  onChange={(e) => setSupabaseServiceKey(e.target.value)}
+                  placeholder="eyJhbGciOi..."
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Anon Key (written into the project&apos;s .env.local)
+                </label>
+                <input
+                  type="password"
+                  value={supabaseAnonKey}
+                  onChange={(e) => setSupabaseAnonKey(e.target.value)}
+                  placeholder="eyJhbGciOi..."
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
             </div>
           </div>
 

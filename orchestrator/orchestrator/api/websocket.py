@@ -209,3 +209,20 @@ async def emit_build_passed(project_id: str, default_branch: str) -> None:
         {"project_id": project_id, "default_branch": default_branch},
         room=_project_room(project_id),
     )
+
+
+async def emit_aider_needs_help(
+    project_id: str,
+    issue_number: int,
+    error_summary: str,
+) -> None:
+    """Fires when Aider's pre-push build check fails but main is clean — user decides next step."""
+    await sio.emit(
+        "aider:needs_help",
+        {
+            "project_id": project_id,
+            "issue_number": issue_number,
+            "error_summary": error_summary,
+        },
+        room=_project_room(project_id),
+    )

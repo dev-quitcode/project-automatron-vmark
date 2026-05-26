@@ -151,6 +151,56 @@ async def _fetch_figma_context(urls: list[str], token: str) -> str:
     return "\n\n".join(parts)
 
 
+async def _introspect_supabase_schema(supabase_url: str, service_role_key: str) -> str:
+    """Query PostgREST's OpenAPI endpoint to list every table and column in the public schema.
+
+    Returns a markdown-formatted summary suitable for injection into the architect's prompt.
+    The architect should treat this as authoritative over any migration files in the repo.
+    """
+    import httpx
+
+    base = supabase_url.rstrip("/")
+    headers = {"apikey": service_role_key, "Authorization": f"Bearer {service_role_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{base}/rest/v1/", headers=headers)
+    except Exception as exc:
+        return f"[Supabase schema introspection failed: {exc}]"
+
+    if resp.status_code != 200:
+        return f"[Supabase schema introspection failed: HTTP {resp.status_code} — {resp.text[:200]}]"
+
+    try:
+        spec = resp.json()
+    except ValueError:
+        return "[Supabase schema introspection failed: invalid OpenAPI JSON]"
+
+    definitions = spec.get("definitions", {}) or {}
+    if not definitions:
+        return "[Supabase schema is empty — no tables exposed via PostgREST]"
+
+    lines: list[str] = []
+    for table_name in sorted(definitions.keys()):
+        table = definitions[table_name]
+        props = table.get("properties", {}) or {}
+        required = set(table.get("required", []) or [])
+        cols = []
+        for col_name in sorted(props.keys()):
+            col = props[col_name]
+            t = col.get("format") or col.get("type") or "?"
+            nullable = " NULL" if col_name not in required else ""
+            cols.append(f"  {col_name}: {t}{nullable}")
+        lines.append(f"### `{table_name}`\n" + "\n".join(cols))
+
+    return (
+        "**This schema is the source of truth.** "
+        "If you find migration files in the repo with different column names, trust this schema, "
+        "NOT the migrations.\n\n"
+        + "\n\n".join(lines)
+    )
+
+
 def _summarise_figma_node(data: dict[str, Any]) -> str:
     """Walk Figma JSON and extract frame/component names and visible text (max 100 lines)."""
     lines: list[str] = []
@@ -450,6 +500,22 @@ class GitHubOrchestrator:
             figma_context = (figma_context + "\n\n" + figma_file_context).strip()
             await self._log("Figma file context included", f"{len(figma_file_context)} chars", "INFO")
 
+        # Introspect live Supabase schema so the architect plans against real columns,
+        # not whatever migrations / generic patterns it would otherwise guess.
+        supabase_schema = ""
+        supabase_url = (project.get("supabase_url") or "").strip()
+        supabase_key = (project.get("supabase_service_role_key") or "").strip()
+        if supabase_url and supabase_key:
+            await self._log("Introspecting Supabase schema", supabase_url, "RUNNING")
+            supabase_schema = await _introspect_supabase_schema(supabase_url, supabase_key)
+            await self._log("Supabase schema loaded", f"{len(supabase_schema)} chars", "SUCCESS")
+        elif "@supabase/supabase-js" in pkg_json:
+            await self._log(
+                "Supabase detected but credentials missing",
+                "Set supabase_url + supabase_service_role_key on the project to enable schema-grounded planning",
+                "AMBIGUITY",
+            )
+
         system_prompt = _load_prompt("architect_github_v1.txt")
         user_msg = (
             f"Repository: {owner}/{repo}\n\n"
@@ -457,6 +523,8 @@ class GitHubOrchestrator:
         )
         if stack_context:
             user_msg += f"## Tech Stack Files{stack_context}\n\n"
+        if supabase_schema:
+            user_msg += f"## Live Supabase Schema\n\n{supabase_schema}\n\n"
         if figma_context:
             user_msg += f"## Figma Design Context\n\n{figma_context}\n\n"
         user_msg += "Produce the architecture document, stories document, and issue plan now."
@@ -781,6 +849,87 @@ class GitHubOrchestrator:
 
     # ── Stage 4: AI review a PR ───────────────────────────────────────────────
 
+    async def _collect_imported_signatures(
+        self,
+        owner: str,
+        repo: str,
+        diff: str,
+        diff_file_paths: list[str],
+    ) -> str:
+        """For every relative/alias import that appears in the diff, fetch the imported file
+        and extract its top-level export signatures. Lets the reviewer catch wrong call sites
+        and missing exports without trusting the LLM to remember signatures across files.
+        """
+        # Match: import { x, y as z } from "@/lib/auth"  OR  from "./utils"
+        import_re = re.compile(
+            r'^\+?\s*import\s+(?:\*\s+as\s+\w+|\w+(?:\s*,\s*\{[^}]+\})?|\{[^}]+\})?\s*'
+            r'from\s+["\']([^"\']+)["\']',
+            re.MULTILINE,
+        )
+        sources: set[str] = set()
+        for m in import_re.finditer(diff):
+            src = m.group(1)
+            # Skip bare npm packages — we only want first-party files
+            if src.startswith(("@/", "./", "../")) or src.startswith("~/"):
+                sources.add(src)
+
+        if not sources:
+            return ""
+
+        # Resolve each import to a candidate file path
+        def _resolve(src: str, from_file: str | None) -> list[str]:
+            if src.startswith("@/"):
+                base = "src/" + src[2:]
+            elif src.startswith("~/"):
+                base = "src/" + src[2:]
+            elif src.startswith(("./", "../")) and from_file:
+                from pathlib import PurePosixPath
+                base = str((PurePosixPath(from_file).parent / src).resolve()).lstrip("/")
+            else:
+                return []
+            # Try common extensions / index files
+            return [
+                base, f"{base}.ts", f"{base}.tsx", f"{base}.js", f"{base}.jsx",
+                f"{base}/index.ts", f"{base}/index.tsx", f"{base}/index.js",
+            ]
+
+        # Map each source to the first file in the diff that imported it (for relative resolution)
+        # Cheap heuristic: try resolving from each touched file until one resolves
+        sigs_by_file: dict[str, str] = {}
+        for src in sources:
+            candidates: list[str] = []
+            for diff_fp in diff_file_paths or [None]:
+                candidates.extend(_resolve(src, diff_fp))
+            # Dedupe, keep order
+            seen: set[str] = set()
+            uniq = [c for c in candidates if not (c in seen or seen.add(c))]
+            for cand in uniq[:7]:
+                if cand in sigs_by_file:
+                    break
+                try:
+                    content = await self.gh.read_file(owner, repo, cand)
+                except Exception:
+                    content = None
+                if content is None:
+                    continue
+                # Extract top-level export signatures (lightweight regex)
+                sig_lines = re.findall(
+                    r'^export\s+(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+\w+[^{=;\n]*',
+                    content,
+                    re.MULTILINE,
+                )
+                if sig_lines:
+                    sigs_by_file[cand] = "\n".join(s.strip() for s in sig_lines[:15])
+                break
+
+        if not sigs_by_file:
+            return ""
+        sections = [f"### `{path}`\n```ts\n{sigs}\n```" for path, sigs in sigs_by_file.items()]
+        return (
+            "\n\n---\n\n## Imported file signatures (for cross-file consistency check)\n\n"
+            + "\n\n".join(sections)
+        )
+
     async def review_pr(self, issue_number: int, pr_number: int) -> None:
         """Fetch the PR diff, call the reviewer LLM, post a comment, store the result."""
         project = await self._project()
@@ -804,9 +953,12 @@ class GitHubOrchestrator:
         )
 
         system_prompt = (
-            "You are a code reviewer. You will receive a GitHub issue (the task specification) "
-            "and the PR diff that implements it.\n\n"
-            "Review the diff against the acceptance criteria and implementation notes.\n"
+            "You are a code reviewer. You will receive a GitHub issue (the task specification), "
+            "the PR diff that implements it, and the signatures of files the diff imports from.\n\n"
+            "Review the diff against the acceptance criteria and implementation notes. "
+            "Additionally: confirm every call site in the diff matches the signature of the function "
+            "it calls (argument count and types), and confirm every imported symbol actually exists in "
+            "the referenced module.\n\n"
             "Respond with:\n"
             "1. **PASSED** or **ISSUES FOUND** on the first line\n"
             "2. A brief summary (2-3 sentences)\n"
@@ -814,10 +966,16 @@ class GitHubOrchestrator:
             "4. Bullet list of what was done well\n\n"
             "Be concise. Focus on correctness and completeness vs the spec, not style."
         )
+
+        # Extract paths the diff touches so relative imports resolve correctly
+        diff_file_paths = re.findall(r'^\+\+\+ b/(.+)$', diff, re.MULTILINE)
+        imported_sigs = await self._collect_imported_signatures(owner, repo, diff, diff_file_paths)
+
         user_msg = (
             f"## Issue #{issue_number}: {issue.get('title', '')}\n\n"
             f"{issue_body}\n\n"
             f"---\n\n## PR Diff\n\n```diff\n{diff[:80000]}\n```"
+            f"{imported_sigs}"
         )
 
         try:

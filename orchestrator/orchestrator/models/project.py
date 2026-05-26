@@ -64,6 +64,9 @@ PROJECT_COLUMN_DEFS: dict[str, str] = {
     "issue_plan_json": "TEXT",
     "figma_urls_json": "TEXT NOT NULL DEFAULT '[]'",
     "figma_file_context": "TEXT NOT NULL DEFAULT ''",
+    "supabase_url": "TEXT",
+    "supabase_service_role_key": "TEXT",
+    "supabase_anon_key": "TEXT",
 }
 
 JSON_FIELDS = {
@@ -376,6 +379,9 @@ async def create_project(
     github_repo_owner: str | None = None,
     github_repo_name: str | None = None,
     figma_urls: list[str] | None = None,
+    supabase_url: str | None = None,
+    supabase_service_role_key: str | None = None,
+    supabase_anon_key: str | None = None,
 ) -> dict[str, Any]:
     """Create a new project record."""
     await _ensure_db_ready()
@@ -403,10 +409,13 @@ async def create_project(
                 github_repo_owner,
                 github_repo_name,
                 figma_urls_json,
+                supabase_url,
+                supabase_service_role_key,
+                supabase_anon_key,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, 'pending', 'intake', ?, ?, ?, '', '{}', ?, 'pending', 'not_configured', 'not_configured', ?, '[]', ?, ?, ?, ?, ?)
+            VALUES (?, ?, 'pending', 'intake', ?, ?, ?, '', '{}', ?, 'pending', 'not_configured', 'not_configured', ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -419,6 +428,9 @@ async def create_project(
                 github_repo_owner,
                 github_repo_name,
                 _json_dumps(figma_urls or []),
+                supabase_url,
+                supabase_service_role_key,
+                supabase_anon_key,
                 now,
                 now,
             ),

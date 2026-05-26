@@ -68,14 +68,15 @@ async def run_build_in_docker(repo_dir: Path) -> tuple[bool, str]:
 
 
 def _extract_build_error(detail: str) -> str:
-    """Pull the most informative lines out of npm build output."""
+    """Return matched error lines + the last 100 lines of output for full context."""
     lines = detail.splitlines()
-    # Collect lines that look like errors
     error_lines = [l for l in lines if any(k in l for k in ("Error:", "error TS", "⨯", "Failed to", "Cannot find", "SyntaxError", "TypeError", "× ", "Module not found", "Can't resolve", "does not provide"))]
+    tail = lines[-100:]
     if error_lines:
-        return "\n".join(error_lines[:20])
-    # Fall back to last 20 lines
-    return "\n".join(lines[-20:])
+        header = "── Matched errors ──\n" + "\n".join(error_lines[:20])
+        body = "── Last 100 lines of output ──\n" + "\n".join(tail)
+        return f"{header}\n\n{body}"
+    return "\n".join(tail)
 
 
 async def _create_build_failure_issue(

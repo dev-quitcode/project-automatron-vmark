@@ -74,6 +74,9 @@ class CreateProjectRequest(BaseModel):
     source_ref: str | None = None
     llm_config: ProjectLlmConfigRequest | None = None
     figma_urls: list[str] = Field(default_factory=list)
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+    supabase_anon_key: str | None = None
 
 
 class ReviewPRRequest(BaseModel):
@@ -236,6 +239,9 @@ async def api_create_project(req: CreateProjectRequest) -> Any:
         github_repo_owner=github_repo_owner,
         github_repo_name=github_repo_name,
         figma_urls=[u for u in req.figma_urls if u.strip()],
+        supabase_url=(req.supabase_url or "").strip() or None,
+        supabase_service_role_key=(req.supabase_service_role_key or "").strip() or None,
+        supabase_anon_key=(req.supabase_anon_key or "").strip() or None,
     )
     return project
 

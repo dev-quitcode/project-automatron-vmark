@@ -213,6 +213,9 @@ export interface ProjectCreateRequest {
   source_ref?: string | null;
   llm_config?: ProjectLlmConfig;
   figma_urls?: string[];
+  supabase_url?: string;
+  supabase_service_role_key?: string;
+  supabase_anon_key?: string;
 }
 
 export interface UpdateProjectLlmConfigRequest extends ProjectLlmConfig {}
