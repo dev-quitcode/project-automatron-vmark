@@ -959,6 +959,12 @@ class GitHubOrchestrator:
             "Additionally: confirm every call site in the diff matches the signature of the function "
             "it calls (argument count and types), and confirm every imported symbol actually exists in "
             "the referenced module.\n\n"
+            "## Pass/fail rules — strict\n"
+            "- Output **PASSED** ONLY if every acceptance criterion is met AND there are no correctness "
+            "issues to list under the Issues section.\n"
+            "- If ANY acceptance criterion is partially met, missed, or skipped — output **ISSUES FOUND**.\n"
+            "- If ANY call site, import, or signature is wrong — output **ISSUES FOUND**.\n"
+            "- You cannot output PASSED while also listing concrete issues. The two are mutually exclusive.\n\n"
             "Respond with:\n"
             "1. **PASSED** or **ISSUES FOUND** on the first line\n"
             "2. A brief summary (2-3 sentences)\n"
@@ -990,6 +996,30 @@ class GitHubOrchestrator:
             return
 
         passed = review_text.strip().upper().startswith("PASSED")
+
+        # Safety net: model sometimes writes "PASSED" then lists real issues anyway.
+        # If we see an "Issues" section with substantive bullet points, override to fail.
+        if passed:
+            issues_section = re.search(
+                r'(?:^|\n)\s*(?:##\s*|[*]+\s*)?(?:Issues|Issues found|Problems|Concerns)[:\s]*\n((?:.|\n)*?)(?=\n\s*(?:##|[*]+\s*(?:Strengths|What was done well|Praise))|$)',
+                review_text,
+                re.IGNORECASE,
+            )
+            if issues_section:
+                bullets = re.findall(r'^\s*[-*]\s+(.+)$', issues_section.group(1), re.MULTILINE)
+                # Filter out trivially-empty or "no issues"-style bullets
+                substantive = [
+                    b for b in bullets
+                    if len(b.strip()) > 25
+                    and not re.match(r'^\s*(none|n/a|no issues|nothing|—)\s*$', b.strip(), re.IGNORECASE)
+                ]
+                if substantive:
+                    logger.warning(
+                        "PR review: model wrote PASSED but listed %d substantive issue(s) — overriding to ISSUES FOUND",
+                        len(substantive),
+                    )
+                    passed = False
+
         await self._log(
             f"PR #{pr_number} review: {'PASSED' if passed else 'ISSUES FOUND'}",
             review_text[:200].replace("\n", " "),
