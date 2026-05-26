@@ -682,14 +682,32 @@ async def implement_issue(
             # Only block the push when main is known to build. If main itself is broken,
             # blocking would prevent any fix-the-build PRs from landing.
             main_builds = await _baseline_branch_builds(workspace, authed_url, default_branch)
+            from orchestrator.build_check import _extract_build_error as _xerr
+            summary = _xerr(build_output2)
+            # Always log the full build error to stdout so it shows in `docker logs`
+            logger.error(
+                "Aider: pre-push build error for issue #%d:\n%s",
+                issue_number, summary[-3000:],
+            )
+            # Persist to activity_logs so it's visible in the UI Activity tab
+            try:
+                from orchestrator.models.project import save_activity_log, get_activity_logs
+                existing = await get_activity_logs(project_id)
+                seq = (max((r.get("seq", 0) for r in existing), default=0) + 1)
+                await save_activity_log(
+                    project_id, seq,
+                    f"Aider build failed for issue #{issue_number}",
+                    summary[-3000:],
+                    "ERROR",
+                )
+            except Exception as exc:
+                logger.warning("Aider: failed to persist build error to activity log: %s", exc)
             if main_builds:
                 logger.error(
-                    "Aider: build failing on this PR but main is clean — blocking push for issue #%d",
+                    "Aider: blocking push — main builds clean, this PR doesn't (issue #%d)",
                     issue_number,
                 )
                 from orchestrator.api.websocket import emit_aider_needs_help
-                from orchestrator.build_check import _extract_build_error as _xerr
-                summary = _xerr(build_output2)
                 await emit_aider_needs_help(project_id, issue_number, summary)
                 return None, f"Pre-push build failed and main is clean — Aider needs human help.\n\n{summary[-2000:]}"
             logger.warning(
