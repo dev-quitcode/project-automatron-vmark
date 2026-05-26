@@ -436,6 +436,11 @@ async def implement_issue(
         await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
         await _run(["git", "checkout", "-B", branch], cwd=repo_dir)
 
+    # Remove untracked files left over from prior runs (e.g. empty placeholder
+    # directories Aider created that were never committed). Respects .gitignore so
+    # node_modules/.next survive. Without this, stale files sabotage subsequent builds.
+    await _run(["git", "clean", "-fd"], cwd=repo_dir)
+
     # Re-implementation: diff patches only the broken parts in existing files on the branch.
     # Fresh implementation: whole writes complete new files from scratch (diff needs files
     # already in context, which is impossible when the target files don't exist yet).
