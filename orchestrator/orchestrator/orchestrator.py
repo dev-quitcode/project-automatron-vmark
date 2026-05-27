@@ -276,7 +276,13 @@ async def _build_stack_summary(gh: Any, owner: str, repo: str) -> str:
     return "\n".join(lines) if lines else ""
 
 
-def _render_issue_body(task: dict[str, Any], epic: str, story: str, stack_summary: str = "") -> str:
+def _render_issue_body(
+    task: dict[str, Any],
+    epic: str,
+    story: str,
+    stack_summary: str = "",
+    skill_context: str = "",
+) -> str:
     lines: list[str] = []
     lines.append(f"**Epic:** {epic}  ")
     lines.append(f"**Story:** {story}")
@@ -317,6 +323,10 @@ def _render_issue_body(task: dict[str, Any], epic: str, story: str, stack_summar
     if stack_summary:
         lines.append("## Tech stack context")
         lines.append(stack_summary)
+        lines.append("")
+
+    if skill_context:
+        lines.append(skill_context)
 
     return "\n".join(lines)
 
@@ -516,6 +526,13 @@ class GitHubOrchestrator:
                 "AMBIGUITY",
             )
 
+        # Stack-specific best-practice skills from skills.sh / GitHub
+        from orchestrator.skills import detect_skills, build_skill_context
+        skill_ids = detect_skills(pkg_json, tw_config, components_json)
+        skill_context = await build_skill_context(skill_ids, "Best-practice guidelines for this stack")
+        if skill_ids:
+            await self._log("Skills loaded", ", ".join(skill_ids), "INFO")
+
         system_prompt = _load_prompt("architect_github_v1.txt")
         user_msg = (
             f"Repository: {owner}/{repo}\n\n"
@@ -523,6 +540,8 @@ class GitHubOrchestrator:
         )
         if stack_context:
             user_msg += f"## Tech Stack Files{stack_context}\n\n"
+        if skill_context:
+            user_msg += f"{skill_context}\n\n"
         if supabase_schema:
             user_msg += f"## Live Supabase Schema\n\n{supabase_schema}\n\n"
         if figma_context:
@@ -606,8 +625,18 @@ class GitHubOrchestrator:
         issue_plan_raw = project.get("issue_plan_json") or project.get("execution_contract_json") or "{}"
         issue_plan = json.loads(issue_plan_raw) if isinstance(issue_plan_raw, str) else issue_plan_raw
 
-        # Build stack summary to embed in every issue body
+        # Build stack summary + best-practice skill context to embed in every issue body
         stack_summary = await _build_stack_summary(self.gh, owner, repo)
+        from orchestrator.skills import detect_skills, build_skill_context
+        _pkg = await self.gh.read_file(owner, repo, "package.json") or ""
+        _tw = (
+            await self.gh.read_file(owner, repo, "tailwind.config.ts")
+            or await self.gh.read_file(owner, repo, "tailwind.config.js")
+            or ""
+        )
+        _comp = await self.gh.read_file(owner, repo, "components.json") or ""
+        skill_ids = detect_skills(_pkg, _tw, _comp)
+        skill_context = await build_skill_context(skill_ids, "Best-practice context (apply these patterns)")
 
         if not issue_plan.get("epics"):
             raise RuntimeError("No issue plan found — re-run planning first")
@@ -679,7 +708,7 @@ class GitHubOrchestrator:
 
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    body = _render_issue_body(task, epic_title, story_title, stack_summary)
+                    body = _render_issue_body(task, epic_title, story_title, stack_summary, skill_context)
                     # GitHub label names are capped at 50 chars
                     label_name = story_title[:50] if story_title else ""
                     labels = [label_name] if label_name else []
@@ -977,12 +1006,27 @@ class GitHubOrchestrator:
         diff_file_paths = re.findall(r'^\+\+\+ b/(.+)$', diff, re.MULTILINE)
         imported_sigs = await self._collect_imported_signatures(owner, repo, diff, diff_file_paths)
 
+        # Stack-specific best-practice skills — give the reviewer the same context the
+        # architect used so it can flag violations of those guidelines.
+        from orchestrator.skills import detect_skills, build_skill_context
+        pkg_json = await self.gh.read_file(owner, repo, "package.json") or ""
+        tw_config = (
+            await self.gh.read_file(owner, repo, "tailwind.config.ts")
+            or await self.gh.read_file(owner, repo, "tailwind.config.js")
+            or ""
+        )
+        components_json = await self.gh.read_file(owner, repo, "components.json") or ""
+        skill_ids = detect_skills(pkg_json, tw_config, components_json)
+        skill_context = await build_skill_context(skill_ids, "Stack best-practice guidelines (flag any diff that violates these)")
+
         user_msg = (
             f"## Issue #{issue_number}: {issue.get('title', '')}\n\n"
             f"{issue_body}\n\n"
             f"---\n\n## PR Diff\n\n```diff\n{diff[:80000]}\n```"
             f"{imported_sigs}"
         )
+        if skill_context:
+            user_msg += f"\n\n---\n\n{skill_context}"
 
         try:
             review_text = await call_llm(
@@ -1090,6 +1134,18 @@ class GitHubOrchestrator:
         ) or "(no issues yet)"
         stack_summary = await _build_stack_summary(self.gh, owner, repo) or "(stack unknown)"
 
+        # Best-practice skills based on the project's stack
+        from orchestrator.skills import detect_skills, build_skill_context
+        _pkg = await self.gh.read_file(owner, repo, "package.json") or ""
+        _tw = (
+            await self.gh.read_file(owner, repo, "tailwind.config.ts")
+            or await self.gh.read_file(owner, repo, "tailwind.config.js")
+            or ""
+        )
+        _comp = await self.gh.read_file(owner, repo, "components.json") or ""
+        skill_ids = detect_skills(_pkg, _tw, _comp)
+        skill_context_for_body = await build_skill_context(skill_ids, "Best-practice context (apply these patterns)")
+
         # Live schema (only if user provided Supabase creds at project creation)
         schema_context = "(not available — pass supabase creds at project creation to enable)"
         supabase_url = (project.get("supabase_url") or "").strip()
@@ -1167,7 +1223,7 @@ class GitHubOrchestrator:
         for issue_spec in issues:
             title = issue_spec.get("title", message[:80])
             epic = issue_spec.get("epic") or "Feedback"
-            body = _render_issue_body(issue_spec, epic, "", stack_summary)
+            body = _render_issue_body(issue_spec, epic, "", stack_summary, skill_context_for_body)
             labels = issue_spec.get("labels") or ["enhancement"]
             try:
                 gh_issue = await self.gh.create_issue(
@@ -1341,12 +1397,24 @@ class GitHubOrchestrator:
             except Exception:
                 pass
 
+            # Cache stack + skill context once per audit run (was re-fetched per task)
+            audit_stack = await _build_stack_summary(self.gh, owner, repo)
+            from orchestrator.skills import detect_skills, build_skill_context
+            _pkg = await self.gh.read_file(owner, repo, "package.json") or ""
+            _tw = (
+                await self.gh.read_file(owner, repo, "tailwind.config.ts")
+                or await self.gh.read_file(owner, repo, "tailwind.config.js")
+                or ""
+            )
+            _comp = await self.gh.read_file(owner, repo, "components.json") or ""
+            audit_skill_ids = detect_skills(_pkg, _tw, _comp)
+            audit_skill_context = await build_skill_context(audit_skill_ids, "Best-practice context (apply these patterns)")
+
             for story in epic.get("stories", []):
                 story_title = story.get("title", "")
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    audit_stack = await _build_stack_summary(self.gh, owner, repo)
-                    body = _render_issue_body(task, epic_title, story_title, audit_stack)
+                    body = _render_issue_body(task, epic_title, story_title, audit_stack, audit_skill_context)
                     try:
                         gh_issue = await self.gh.create_issue(
                             owner, repo,
@@ -1606,6 +1674,16 @@ async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
     arch_model = llm_cfg["architect"]["model"]
 
     stack_summary = await _build_stack_summary(orch.gh, owner, repo)
+    from orchestrator.skills import detect_skills, build_skill_context
+    _pkg = await orch.gh.read_file(owner, repo, "package.json") or ""
+    _tw = (
+        await orch.gh.read_file(owner, repo, "tailwind.config.ts")
+        or await orch.gh.read_file(owner, repo, "tailwind.config.js")
+        or ""
+    )
+    _comp = await orch.gh.read_file(owner, repo, "components.json") or ""
+    cip_skill_ids = detect_skills(_pkg, _tw, _comp)
+    cip_skill_context = await build_skill_context(cip_skill_ids, "Best-practice context (apply these patterns)")
 
     prompt_tpl = _load_prompt("issue_from_prompt_v1.txt")
     user_msg = prompt_tpl.format(prompt=prompt, stack_context=stack_summary or "(not available)")
@@ -1628,7 +1706,7 @@ async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
 
     title = spec.get("title", prompt[:80])
     epic = spec.get("epic") or "General"
-    body = _render_issue_body(spec, epic, "", stack_summary)
+    body = _render_issue_body(spec, epic, "", stack_summary, cip_skill_context)
 
     gh_issue = await orch.gh.create_issue(owner, repo, title=title, body=body)
     issue_number = gh_issue["number"]
