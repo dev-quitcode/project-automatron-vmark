@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
+import * as api from "@/lib/api";
 import {
   connectSocket,
   disconnectSocket,
@@ -44,6 +45,9 @@ export function useWebSocket(projectId?: string) {
       setConnected(true);
       if (projectId) {
         joinProjectRoom(projectId);
+        // Refetch issues so a stale tab catches up on status changes that
+        // happened while the socket was disconnected.
+        api.getIssues(projectId).then(setIssues).catch(() => {});
       }
     });
 
