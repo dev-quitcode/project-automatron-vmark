@@ -263,6 +263,58 @@ async def _fill_missing_files(
     )
 
 
+async def _implement_untouched_files(
+    repo_dir: Path,
+    untouched: list[str],
+    issue_body: str,
+    model: str,
+    env: dict[str, str],
+) -> int:
+    """Aider promised to edit these files but didn't touch them. Run a focused diff-mode
+    pass listing the missed files so it applies the same changes.
+
+    Returns the number of files that now appear in `git status` (i.e. were actually edited).
+    """
+    import shutil
+
+    untouched_list = "\n".join(f"- {fp}" for fp in untouched)
+    task = (
+        f"The original task required changes to these files, but the previous run did not "
+        f"edit them. Apply the same pattern/changes you applied to similar files in the diff "
+        f"so far. Each of these files needs the same treatment.\n\n"
+        f"Files still needing changes:\n{untouched_list}\n\n"
+        f"Original task context:\n{issue_body[:2000]}"
+    )
+
+    args = [
+        "--model", model,
+        "--message", task,
+        "--edit-format", "diff",
+        "--yes", "--no-pretty", "--no-check-update", "--no-show-model-warnings",
+        "--map-tokens", "4096", "--git", "--auto-commits",
+    ]
+    for fp in untouched:
+        args.extend(["--file", fp])
+
+    if shutil.which("aider"):
+        cmd = ["aider", *args]
+    elif shutil.which("uvx"):
+        cmd = ["uvx", "aider-chat", *args]
+    else:
+        cmd = ["uv", "tool", "run", "aider-chat", *args]
+
+    rc, out = await _run_aider(cmd, cwd=repo_dir, env=env)
+    logger.info("Aider implement-untouched run (rc=%d):\n%s", rc, out[-1000:])
+
+    # Check which files now show up in `git diff` against HEAD~1 (after this follow-up commit)
+    rc_diff, diff_out = await _run(
+        ["git", "diff", "--name-only", "HEAD~1..HEAD"],
+        cwd=repo_dir,
+    )
+    touched_now = set(diff_out.splitlines()) if rc_diff == 0 else set()
+    return sum(1 for fp in untouched if fp in touched_now)
+
+
 async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
     """Detect files committed at paths with duplicated segments and move them.
 
@@ -644,6 +696,38 @@ async def implement_issue(
             logger.info(
                 "Aider: fill pass repaired %d/%d file(s) for issue #%d",
                 filled, len(missing_files), issue_number,
+            )
+
+    # Completeness check: files the issue listed that Aider failed to touch at all.
+    # Distinct from missing/empty — these files exist with content but Aider ignored them.
+    # Common cause: multi-file refactor where Aider stops after 2-3 files due to output budget.
+    if not is_reimplementation and file_paths:
+        # Refresh meaningful_files list — fill-missing-files may have added new commits
+        _, all_committed = await _run(
+            ["git", "diff", "--name-only", f"origin/{default_branch}..HEAD"],
+            cwd=repo_dir,
+        )
+        actually_touched = set(
+            f for f in all_committed.splitlines()
+            if f.strip() and f.strip() not in (".gitignore", ".aider.gitignore")
+        )
+        untouched_expected = [
+            fp for fp in file_paths
+            if fp not in actually_touched
+            and (repo_dir / fp).exists()
+            and not _is_file_empty_or_unparseable(repo_dir / fp)
+        ]
+        if untouched_expected:
+            logger.warning(
+                "Aider: %d expected file(s) not touched for issue #%d — %s",
+                len(untouched_expected), issue_number, untouched_expected,
+            )
+            edited = await _implement_untouched_files(
+                repo_dir, untouched_expected, issue_body, model, env,
+            )
+            logger.info(
+                "Aider: implement-untouched pass edited %d/%d file(s) for issue #%d",
+                edited, len(untouched_expected), issue_number,
             )
 
     # Pre-push build validation — catch broken code before it reaches GitHub.

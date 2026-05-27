@@ -82,6 +82,7 @@ List all user stories grouped by Epic. Use this format:
 2. **Tasks must be ordered** — dependency order. A task that depends on another must come after it.
 3. **Every task needs a validation command** — always `npm run build`, `python -m pytest`, or equivalent.
 4. **implementation_notes must be concrete** — include exact file paths, component names, CSS classes, API routes, and type names. No vague guidance like "style it nicely" or "handle errors". Write as if the developer cannot see any other file.
+4a. **Every file the task must create or modify MUST be listed with a backtick-quoted path in implementation_notes** — e.g. `` `src/app/users/page.tsx` ``. If the task spans multiple files (e.g. "refactor X across all callers"), list each call site as a separate backticked path. The downstream builder agent only edits files it sees explicit paths for — omitted paths will not be touched.
 5. **UI tasks must specify visual details** — layout (flex/grid), spacing (Tailwind classes), colors (use the project's palette/tokens), component variants. If a Figma design is provided, reference it directly.
 6. **acceptance_criteria must be visual and testable** — describe what the user sees, not just "it works". Include at least one build/test command criterion.
 7. **Do not include infrastructure tasks** (CI/CD, Dockerfile, deploy scripts) unless explicitly mentioned in the requirements.

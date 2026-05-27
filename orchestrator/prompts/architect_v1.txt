@@ -103,7 +103,7 @@ This is the runtime source of truth. It MUST include:
         "phase": "Initialization",
         "plan_line": 12
       },
-      "files_expected": ["app/page.tsx"],
+      "files_expected": ["app/page.tsx"],   // EVERY file the task must create or modify. For multi-file refactors, list every call site. Builder only edits files that appear here.
       "done_when": [
         "The scaffold builds successfully",
         "Core files exist with project-specific metadata"

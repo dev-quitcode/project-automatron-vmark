@@ -21,3 +21,6 @@ Output ONLY valid JSON — no markdown fences, no preamble:
     "At least 3 criteria"
   ]
 }
+
+Rules:
+- Every file the task must create or modify MUST appear as a backtick-quoted path somewhere in implementation_notes — e.g. `src/app/users/page.tsx`. If the task touches multiple files (refactor across N callers, add a hook used by M components, etc.), list every one. The downstream builder only edits files for which it sees explicit paths; any path you omit will not be touched.

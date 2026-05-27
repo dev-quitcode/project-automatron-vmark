@@ -41,6 +41,7 @@ Pick exactly one `kind`:
         "Concrete note referencing exact file paths, component names, or DB columns from the live schema",
         "Include CSS classes, props, or API endpoints where relevant",
         "Mention error handling and loading states if applicable",
+        "EVERY file the task must create or modify MUST appear here as a backtick-quoted path (e.g. `src/app/users/page.tsx`). For refactors that touch N callers, list each call site as its own backticked path. The builder only edits files for which it sees explicit paths — omit a path, and that file will not be touched.",
         "At least 3 notes, up to 8"
       ],
       "acceptance_criteria": [
