@@ -92,16 +92,33 @@ def _extract_token_from_cookies(cookies: dict[str, str]) -> tuple[str, str] | No
 
 
 def _allowlisted(email: str) -> bool:
-    allowed = [e.strip().lower() for e in settings.automatron_allowed_emails.split(",") if e.strip()]
-    if not allowed:
-        # Empty allowlist means auth is effectively disabled — only relevant
-        # while AUTH_SECRET is also unset (see require_auth below).
+    """Check the email against AUTOMATRON_ALLOWED_EMAILS rules.
+
+    Each comma-separated rule is either:
+      - A full email address (exact match), e.g. `dev@quitcode.com`
+      - A domain pattern starting with `@`, e.g. `@quitcode.com` matches any
+        email at that domain.
+
+    Empty list means the gate is delegated to Google (OAuth consent screen →
+    Internal Workspace app, or Test users list).
+    """
+    rules = [r.strip().lower() for r in settings.automatron_allowed_emails.split(",") if r.strip()]
+    if not rules:
         return True
-    return (email or "").lower() in allowed
+    email_lower = (email or "").lower()
+    for rule in rules:
+        if rule.startswith("@"):
+            if email_lower.endswith(rule):
+                return True
+        elif email_lower == rule:
+            return True
+    return False
 
 
 def _is_auth_configured() -> bool:
-    return bool(settings.auth_secret) and bool(settings.automatron_allowed_emails)
+    """Auth is wired up as soon as we have a secret to decrypt the JWT. The
+    email allowlist is optional — Google Cloud Console can gate sign-in itself."""
+    return bool(settings.auth_secret)
 
 
 async def require_auth(request: Request) -> dict[str, Any]:

@@ -1,12 +1,21 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 
-// Comma-separated allowlist from env. If empty, ANY Google account can sign in
-// (dev convenience — should always be set in production).
-const allowed = (process.env.AUTOMATRON_ALLOWED_EMAILS ?? "")
+// AUTOMATRON_ALLOWED_EMAILS rules: comma-separated. Each rule is either a
+// full email (exact match) or a domain pattern starting with `@` (e.g.
+// `@quitcode.com` allows everyone at that domain). Empty = delegate to Google.
+const allowRules = (process.env.AUTOMATRON_ALLOWED_EMAILS ?? "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
+
+function emailAllowed(email: string): boolean {
+  if (allowRules.length === 0) return true;
+  const lower = email.toLowerCase();
+  return allowRules.some((rule) =>
+    rule.startsWith("@") ? lower.endsWith(rule) : lower === rule,
+  );
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // Use JWE (default) so the FastAPI orchestrator can decrypt the same cookie
@@ -15,9 +24,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [Google],
   callbacks: {
     signIn({ profile }) {
-      const email = (profile?.email ?? "").toLowerCase();
-      if (allowed.length === 0) return true; // open mode
-      return allowed.includes(email);
+      return emailAllowed(profile?.email ?? "");
     },
     async jwt({ token, profile }) {
       // First sign-in: copy email + name from the Google profile so it sticks
