@@ -9,12 +9,13 @@ from typing import AsyncGenerator
 logging.getLogger("orchestrator").setLevel(logging.INFO)
 
 import socketio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from orchestrator.api.routes import router as api_router
 from orchestrator.api.webhook_github import router as webhook_router
 from orchestrator.api.socket_server import sio
+from orchestrator.auth import require_auth
 from orchestrator.config import settings
 from orchestrator.models.project import init_db
 
@@ -49,8 +50,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # REST API routes
-    app.include_router(api_router, prefix="/api")
+    # REST API routes — auth required for everything in api_router; webhook_router
+    # uses its own HMAC signature check (skip OAuth there) and must stay reachable
+    # for GitHub-originated traffic with no cookies.
+    app.include_router(api_router, prefix="/api", dependencies=[Depends(require_auth)])
     app.include_router(webhook_router, prefix="/api")
 
     # Health endpoint

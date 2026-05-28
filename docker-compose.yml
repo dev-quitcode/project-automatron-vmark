@@ -23,6 +23,10 @@ services:
       - WORKSPACE_BASE_PATH=/var/automatron/workspaces
       - GOLDEN_IMAGE=automatron/golden:latest
       - DEBUG=true
+      # Auth.js session cookie verification (shared with web-ui)
+      - AUTH_SECRET=${AUTH_SECRET:-}
+      - AUTOMATRON_ALLOWED_EMAILS=${AUTOMATRON_ALLOWED_EMAILS:-}
+      - AUTOMATRON_DEV_NO_AUTH=${AUTOMATRON_DEV_NO_AUTH:-false}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -38,6 +42,14 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:8000}
         NEXT_PUBLIC_WS_URL: ${WS_URL:-ws://localhost:8000}
+    environment:
+      # Auth.js v5 — read at runtime, not baked into the bundle
+      - AUTH_SECRET=${AUTH_SECRET:-}
+      - AUTH_URL=${AUTH_URL:-${API_URL:-http://localhost:8000}}
+      - AUTH_TRUST_HOST=true
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - AUTOMATRON_ALLOWED_EMAILS=${AUTOMATRON_ALLOWED_EMAILS:-}
     depends_on:
       orchestrator:
         condition: service_healthy

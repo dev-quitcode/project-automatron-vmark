@@ -23,13 +23,23 @@ def _project_room(project_id: str) -> str:
 
 
 @sio.on("connect")
-async def on_connect(sid: str, environ: dict) -> None:
+async def on_connect(sid: str, environ: dict) -> bool | None:
+    # Validate the Auth.js session cookie before accepting the socket. Returning
+    # False causes socket.io to refuse the connection. The web-ui sends the
+    # cookie automatically since the socket origin matches the page origin.
+    from orchestrator.auth import authenticate_socketio_environ
+    session = authenticate_socketio_environ(environ)
+    if session is None:
+        logger.warning("Socket connect rejected (sid=%s): no/invalid auth cookie", sid)
+        return False
+
     query = environ.get("QUERY_STRING", "")
     params = parse_qs(query)
     project_id = (params.get("projectId") or params.get("project_id") or [None])[0]
     if project_id:
         await sio.enter_room(sid, _project_room(project_id))
-    logger.info("Client connected: %s", sid)
+    logger.info("Client connected: %s (user=%s)", sid, session.get("email", "anon"))
+    return None
 
 
 @sio.on("disconnect")

@@ -17,9 +17,17 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
+    credentials: "include", // send Auth.js session cookie
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  if (res.status === 401) {
+    // Session expired — kick back to login
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+    throw new Error("Not authenticated");
+  }
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${await res.text()}`);
   }

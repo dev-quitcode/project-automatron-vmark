@@ -1,6 +1,7 @@
 "use client";
 
 import { StatusBadge } from "@/components/ui";
+import { UserMenu } from "@/components/layout/UserMenu";
 import { cn } from "@/lib/utils";
 import { useProjectStore } from "@/stores/projectStore";
 import { AlertTriangle, Wifi, WifiOff } from "lucide-react";
@@ -51,6 +52,8 @@ export function Header() {
           )}
           <span>{isConnected ? "Connected" : "Disconnected"}</span>
         </div>
+
+        <UserMenu />
       </div>
     </header>
   );

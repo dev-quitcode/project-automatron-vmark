@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # --- Auth (Google OAuth via Auth.js v5) ---
+    # AUTH_SECRET is shared with the web-ui's NextAuth config. Used to verify the
+    # session JWT cookie. Generate with: openssl rand -base64 32
+    auth_secret: str = ""
+    # Comma-separated allowlist of email addresses that can sign in. Leave empty
+    # to disable auth entirely (dev mode / pre-OAuth deployments).
+    automatron_allowed_emails: str = ""
+    # Local-dev escape hatch: when true, require_auth always returns a fake user.
+    # NEVER set in production.
+    automatron_dev_no_auth: bool = False
+
     @field_validator("debug", mode="before")
     @classmethod
     def _parse_debug_flag(cls, value: object) -> object:

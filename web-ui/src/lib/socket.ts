@@ -10,6 +10,7 @@ export function getSocket(): Socket {
       path: "/socket.io/",
       transports: ["polling", "websocket"],
       autoConnect: false,
+      withCredentials: true, // send the Auth.js session cookie on handshake
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
