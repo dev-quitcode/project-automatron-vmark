@@ -190,15 +190,18 @@ export function LogStream({ logs, className, maxHeight = "400px" }: LogStreamPro
         </div>
       </div>
 
-      {/* Feed — newest first */}
+      {/* Feed — newest first, sorted by timestamp so out-of-order WebSocket
+          events and racy backend seq values still display chronologically. */}
       <div
         ref={containerRef}
         className="overflow-auto px-4 py-4"
         style={{ maxHeight }}
       >
-        {[...logs].reverse().map((log, i) => (
-          <ActivityEntry key={`${log.task_index}-${i}`} log={log} />
-        ))}
+        {[...logs]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .map((log, i) => (
+            <ActivityEntry key={`${log.task_index}-${i}`} log={log} />
+          ))}
       </div>
     </div>
   );
