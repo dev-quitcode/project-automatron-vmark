@@ -708,7 +708,10 @@ class GitHubOrchestrator:
 
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    body = _render_issue_body(task, epic_title, story_title, stack_summary, skill_context)
+                    # Skill content stays in the architect prompt (and reviewer), NOT in
+                    # the issue body — Aider gets the spec the architect produced, and the
+                    # raw skill prose would only inflate input tokens at implementation time.
+                    body = _render_issue_body(task, epic_title, story_title, stack_summary)
                     # GitHub label names are capped at 50 chars
                     label_name = story_title[:50] if story_title else ""
                     labels = [label_name] if label_name else []
@@ -1223,7 +1226,7 @@ class GitHubOrchestrator:
         for issue_spec in issues:
             title = issue_spec.get("title", message[:80])
             epic = issue_spec.get("epic") or "Feedback"
-            body = _render_issue_body(issue_spec, epic, "", stack_summary, skill_context_for_body)
+            body = _render_issue_body(issue_spec, epic, "", stack_summary)
             labels = issue_spec.get("labels") or ["enhancement"]
             try:
                 gh_issue = await self.gh.create_issue(
@@ -1414,7 +1417,7 @@ class GitHubOrchestrator:
                 story_title = story.get("title", "")
                 for task in story.get("tasks", []):
                     task_title = task.get("title", "Untitled Task")
-                    body = _render_issue_body(task, epic_title, story_title, audit_stack, audit_skill_context)
+                    body = _render_issue_body(task, epic_title, story_title, audit_stack)
                     try:
                         gh_issue = await self.gh.create_issue(
                             owner, repo,
@@ -1706,7 +1709,7 @@ async def create_issue_from_prompt(project_id: str, prompt: str) -> None:
 
     title = spec.get("title", prompt[:80])
     epic = spec.get("epic") or "General"
-    body = _render_issue_body(spec, epic, "", stack_summary, cip_skill_context)
+    body = _render_issue_body(spec, epic, "", stack_summary)
 
     gh_issue = await orch.gh.create_issue(owner, repo, title=title, body=body)
     issue_number = gh_issue["number"]
