@@ -332,6 +332,71 @@ async def _implement_untouched_files(
     return sum(1 for fp in untouched if fp in touched_now)
 
 
+async def _enforce_aider_deletions(repo_dir: Path, default_branch: str) -> int:
+    """Aider regularly writes commit messages claiming it deleted a file but never
+    actually runs `git rm` — the file is still present (sometimes emptied, sometimes
+    untouched). This breaks re-implement loops because the reviewer flags the same
+    stray file every round.
+
+    Parse this branch's commit messages for "delete <path>" / "remove <path>" intents
+    and force-delete any matching files that still exist.
+    Returns the number of files removed.
+    """
+    rc, log_out = await _run(
+        ["git", "log", "--format=%B%n---END-COMMIT---", f"origin/{default_branch}..HEAD"],
+        cwd=repo_dir,
+    )
+    if rc != 0 or not log_out.strip():
+        return 0
+
+    # Match: verb (delete/remove/drop/unlink/rm) followed by a backtick-quoted path,
+    # OR a path-like token (must contain `/` or `.`) to reduce false positives.
+    intent_re = re.compile(
+        r"\b(?:delete[ds]?|remove[ds]?|drop[ped]?|unlink|rm)\b[^\n]{0,80}?"
+        r"(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|([\w][\w./\- ]*[\w]))",
+        re.IGNORECASE,
+    )
+
+    candidates: set[str] = set()
+    for m in intent_re.finditer(log_out):
+        raw = next((g for g in m.groups() if g), "").strip().strip("`'\"")
+        if not raw or len(raw) > 200:
+            continue
+        # Must look like a file path: contains "/" or "." OR is a tab-suffixed garbage name
+        if "/" not in raw and "." not in raw and "\t" not in raw:
+            continue
+        # Strip trailing punctuation that often grabs onto path tokens
+        raw = raw.rstrip(".,;:)]}")
+        # Must actually exist in the working tree, otherwise nothing to enforce
+        if (repo_dir / raw).exists() and (repo_dir / raw).is_file():
+            candidates.add(raw)
+
+    if not candidates:
+        return 0
+
+    # Force delete via git rm
+    paths_list = sorted(candidates)
+    rc_rm, rm_out = await _run(
+        ["git", "rm", "-f", "--", *paths_list],
+        cwd=repo_dir,
+    )
+    if rc_rm != 0:
+        logger.warning("Aider deletion enforcement: git rm failed: %s", rm_out[-300:])
+        return 0
+
+    await _run(
+        ["git", "commit", "-m",
+         f"chore: enforce {len(paths_list)} delete(s) Aider claimed but didn't perform\n\n"
+         + "\n".join(f"- {p}" for p in paths_list)],
+        cwd=repo_dir,
+    )
+    logger.warning(
+        "Aider deletion enforcement: removed %d file(s) Aider claimed to delete: %s",
+        len(paths_list), paths_list,
+    )
+    return len(paths_list)
+
+
 async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
     """Detect files committed at paths with duplicated segments and move them.
 
@@ -714,6 +779,12 @@ async def _implement_issue_locked(
     fixed_nextjs = await _fix_nextjs_page_paths(repo_dir, default_branch)
     if fixed_nextjs:
         logger.info("Aider: moved %d misplaced Next.js page file(s) for issue #%d", fixed_nextjs, issue_number)
+
+    # Enforce file deletions Aider claimed in commit messages but didn't perform
+    # (recurring failure mode — reviewer flags the stray file every re-implement round).
+    enforced = await _enforce_aider_deletions(repo_dir, default_branch)
+    if enforced:
+        logger.info("Aider: enforced %d deletion(s) for issue #%d", enforced, issue_number)
 
     # Fill any files that Aider missed due to output-token limit (whole-mode truncation).
     # Two sources of "missing": (a) files declared in the issue body's file_paths, and
