@@ -1162,8 +1162,11 @@ async def get_activity_logs(project_id: str) -> list[dict[str, Any]]:
     await _ensure_db_ready()
     async with aiosqlite.connect(_db_path) as db:
         db.row_factory = aiosqlite.Row
+        # Order by `id` (autoincrement) for true chronological order. `seq` is
+        # computed at write time as max+1 and races under concurrent writers,
+        # producing duplicate seqs in arbitrary order. `id` is monotonic.
         cursor = await db.execute(
-            "SELECT * FROM activity_logs WHERE project_id = ? ORDER BY seq ASC",
+            "SELECT * FROM activity_logs WHERE project_id = ? ORDER BY id ASC",
             (project_id,),
         )
         rows = await cursor.fetchall()
