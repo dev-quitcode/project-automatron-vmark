@@ -162,23 +162,27 @@ async def run_project_build_check(
         rc, out = _sync_run(["git", "clone", clone_url, str(repo_dir)])
 
     if rc != 0:
-        await save_activity_log(project_id, seq, "Build check: git failed", out[-500:], "ERROR")
-        await emit_error(project_id, f"Build check: git failed — {out[-200:]}")
+        from orchestrator.logsafe import redact
+        safe_out = redact(out)
+        await save_activity_log(project_id, seq, "Build check: git failed", safe_out[-500:], "ERROR")
+        await emit_error(project_id, f"Build check: git failed — {safe_out[-200:]}")
         return
 
     logger.info("Build check (project): running npm run build for %s/%s", owner, repo)
     passed, detail = await run_build_in_docker(repo_dir)
 
+    from orchestrator.logsafe import redact
+    safe_detail = redact(detail)
     if passed:
-        await save_activity_log(project_id, seq, "Build check: PASSED", detail[-2000:], "INFO")
+        await save_activity_log(project_id, seq, "Build check: PASSED", safe_detail[-2000:], "INFO")
         logger.info("Build check (project): PASSED for %s/%s", owner, repo)
         from orchestrator.api.websocket import emit_build_passed
         await emit_build_passed(project_id, default_branch)
     else:
-        await save_activity_log(project_id, seq, "Build check: FAILED", detail[-2000:], "ERROR")
-        logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, detail[-200:])
+        await save_activity_log(project_id, seq, "Build check: FAILED", safe_detail[-2000:], "ERROR")
+        logger.error("Build check (project): FAILED for %s/%s: %s", owner, repo, safe_detail[-200:])
         from orchestrator.api.websocket import emit_build_failed
-        summary = _extract_build_error(detail)
+        summary = _extract_build_error(safe_detail)
         await emit_build_failed(project_id, summary, default_branch)
 
 
@@ -218,7 +222,8 @@ async def run_build_check(
         rc, out = _sync_run(["git", "clone", clone_url, str(repo_dir)])
 
     if rc != 0:
-        logger.error("Build check: git failed for %s/%s:\n%s", owner, repo, out)
+        from orchestrator.logsafe import redact
+        logger.error("Build check: git failed for %s/%s:\n%s", owner, repo, redact(out))
         await update_github_issue_build_status(project_id, issue_number, "failed")
         await emit_issues_updated(project_id, await list_github_issues(project_id))
         return False
@@ -229,7 +234,11 @@ async def run_build_check(
     if passed:
         logger.info("Build check: PASSED for %s/%s issue #%d", owner, repo, issue_number)
     else:
-        logger.error("Build check: FAILED for %s/%s issue #%d\n%s", owner, repo, issue_number, detail[-2000:])
+        from orchestrator.logsafe import redact
+        logger.error(
+            "Build check: FAILED for %s/%s issue #%d\n%s",
+            owner, repo, issue_number, redact(detail[-2000:]),
+        )
 
     status = "passed" if passed else "failed"
     await update_github_issue_build_status(project_id, issue_number, status)

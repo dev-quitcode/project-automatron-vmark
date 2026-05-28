@@ -12,8 +12,25 @@ import unicodedata
 from pathlib import Path
 
 from orchestrator.config import settings
+from orchestrator.logsafe import redact
 
 logger = logging.getLogger(__name__)
+
+# Per-project locks to prevent concurrent Aider runs from racing on the shared
+# git workspace (one workspace per project, reused across issues). Without this,
+# two simultaneous Implement clicks can `git checkout` over each other and lose
+# uncommitted work.
+_workspace_locks: dict[str, asyncio.Lock] = {}
+_workspace_locks_guard = asyncio.Lock()
+
+
+async def _get_workspace_lock(project_id: str) -> asyncio.Lock:
+    async with _workspace_locks_guard:
+        lock = _workspace_locks.get(project_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _workspace_locks[project_id] = lock
+        return lock
 
 
 async def _run(
@@ -255,7 +272,7 @@ async def _fill_missing_files(
         cmd = ["uv", "tool", "run", "aider-chat", *fill_args]
 
     rc, out = await _run_aider(cmd, cwd=repo_dir, env=env)
-    logger.info("Aider fill-missing run (rc=%d):\n%s", rc, out[-1000:])
+    logger.info("Aider fill-missing run (rc=%d):\n%s", rc, redact(out[-1000:]))
 
     return sum(
         1 for fp in missing
@@ -304,7 +321,7 @@ async def _implement_untouched_files(
         cmd = ["uv", "tool", "run", "aider-chat", *args]
 
     rc, out = await _run_aider(cmd, cwd=repo_dir, env=env)
-    logger.info("Aider implement-untouched run (rc=%d):\n%s", rc, out[-1000:])
+    logger.info("Aider implement-untouched run (rc=%d):\n%s", rc, redact(out[-1000:]))
 
     # Check which files now show up in `git diff` against HEAD~1 (after this follow-up commit)
     rc_diff, diff_out = await _run(
@@ -430,6 +447,31 @@ def _extract_file_paths(text: str) -> list[str]:
 
 
 async def implement_issue(
+    project_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+    issue_title: str,
+    issue_body: str,
+    default_branch: str = "main",
+    model: str = "anthropic/claude-sonnet-4-6",
+    is_reimplementation: bool = False,
+) -> tuple[str | None, str | None]:
+    """Lock-wrapped entrypoint. Serialises all Aider runs for one project."""
+    lock = await _get_workspace_lock(project_id)
+    if lock.locked():
+        logger.warning(
+            "Aider: project %s already has an implementation in flight — queueing issue #%d",
+            project_id, issue_number,
+        )
+    async with lock:
+        return await _implement_issue_locked(
+            project_id, owner, repo, issue_number, issue_title, issue_body,
+            default_branch, model, is_reimplementation,
+        )
+
+
+async def _implement_issue_locked(
     project_id: str,
     owner: str,
     repo: str,
@@ -611,7 +653,7 @@ async def implement_issue(
 
     logger.info("Aider: running %s on issue #%d (%s)", edit_format, issue_number, issue_title)
     rc, aider_out = await _run_aider(aider_cmd, cwd=repo_dir, env=env)
-    logger.info("Aider output (rc=%d):\n%s", rc, aider_out[-4000:])
+    logger.info("Aider output (rc=%d):\n%s", rc, redact(aider_out[-4000:]))
 
     # Remove placeholder files that Aider didn't fill in (still empty after run)
     for ph in placeholders_created:
@@ -638,10 +680,11 @@ async def implement_issue(
         )
         logger.info("Force commit rc=%d: %s", rc_commit, commit_out[:500])
         if rc_commit != 0:
-            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, aider_out)
-            head = aider_out[:1000].strip()
-            tail = aider_out[-500:].strip()
-            snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
+            safe_aider_out = redact(aider_out)
+            logger.error("Aider: nothing to commit for issue #%d\nAider output:\n%s", issue_number, safe_aider_out)
+            head = safe_aider_out[:1000].strip()
+            tail = safe_aider_out[-500:].strip()
+            snippet = f"{head}\n...\n{tail}" if len(safe_aider_out) > 1500 else safe_aider_out.strip() or "(no output)"
             if "credit balance is too low" in aider_out or "insufficient_quota" in aider_out:
                 return None, "Anthropic API credit balance is too low — top up at console.anthropic.com/billing"
             return None, f"Aider made no changes (rc={rc}).\n\n{snippet}"
@@ -656,9 +699,10 @@ async def implement_issue(
         ]
         if not meaningful_files:
             logger.error("Aider: still no meaningful files for issue #%d", issue_number)
-            head = aider_out[:1000].strip()
-            tail = aider_out[-500:].strip()
-            snippet = f"{head}\n...\n{tail}" if len(aider_out) > 1500 else aider_out.strip() or "(no output)"
+            safe_aider_out = redact(aider_out)
+            head = safe_aider_out[:1000].strip()
+            tail = safe_aider_out[-500:].strip()
+            snippet = f"{head}\n...\n{tail}" if len(safe_aider_out) > 1500 else safe_aider_out.strip() or "(no output)"
             return None, f"Aider wrote no files (only housekeeping).\n\n{snippet}"
 
     # Correct any files that Aider wrote at paths with duplicated segments
@@ -764,7 +808,7 @@ async def implement_issue(
             fix_cmd = ["uv", "tool", "run", "aider-chat", *fix_args]
 
         _, fix_out = await _run_aider(fix_cmd, cwd=repo_dir, env=env)
-        logger.info("Aider fix run output:\n%s", fix_out[-2000:])
+        logger.info("Aider fix run output:\n%s", redact(fix_out[-2000:]))
 
         build_passed2, build_output2 = await run_build_in_docker(repo_dir)
         if not build_passed2:
@@ -772,7 +816,7 @@ async def implement_issue(
             # blocking would prevent any fix-the-build PRs from landing.
             main_builds = await _baseline_branch_builds(workspace, authed_url, default_branch)
             from orchestrator.build_check import _extract_build_error as _xerr
-            summary = _xerr(build_output2)
+            summary = redact(_xerr(build_output2))
             # Always log the full build error to stdout so it shows in `docker logs`
             logger.error(
                 "Aider: pre-push build error for issue #%d:\n%s",
@@ -825,8 +869,9 @@ async def implement_issue(
         timeout=60,
     )
     if rc != 0:
-        logger.error("Aider: push failed:\n%s", push_out)
-        return None, f"git push failed: {push_out[-500:]}"
+        safe_push_out = redact(push_out)
+        logger.error("Aider: push failed:\n%s", safe_push_out)
+        return None, f"git push failed: {safe_push_out[-500:]}"
 
     logger.info("Aider: pushed branch %s for issue #%d (%s mode)", branch, issue_number, edit_format)
     return branch, None

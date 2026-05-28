@@ -16,6 +16,7 @@ from orchestrator.config import settings
 from orchestrator.models.project import (
     find_github_issue_by_repo,
     list_github_issues,
+    record_webhook_delivery,
     update_github_issue_pr,
     update_github_issue_status,
 )
@@ -98,11 +99,20 @@ async def github_webhook(
     background_tasks: BackgroundTasks,
     x_hub_signature_256: str | None = Header(default=None),
     x_github_event: str | None = Header(default=None),
+    x_github_delivery: str | None = Header(default=None),
 ) -> dict[str, Any]:
     body = await request.body()
 
     if not _verify_signature(body, x_hub_signature_256):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # Dedupe: GitHub retries on timeout. Each delivery has a unique UUID;
+    # if we've already processed it, return 200 without doing the work again.
+    if x_github_delivery:
+        is_new = await record_webhook_delivery(x_github_delivery)
+        if not is_new:
+            logger.info("Webhook: duplicate delivery %s — skipping", x_github_delivery)
+            return {"status": "duplicate", "delivery_id": x_github_delivery}
 
     if x_github_event != "pull_request":
         return {"status": "ignored", "event": x_github_event}

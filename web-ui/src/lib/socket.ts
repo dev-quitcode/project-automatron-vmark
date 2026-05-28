@@ -33,6 +33,20 @@ export function disconnectSocket(): void {
   }
 }
 
+/**
+ * Fully tear down the socket singleton — removes ALL listeners and nulls the
+ * module-level reference so the next getSocket() creates a fresh instance.
+ * Use when switching projects so stale event handlers and room subscriptions
+ * from the previous project don't leak.
+ */
+export function resetSocket(): void {
+  if (socket) {
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+  }
+}
+
 export function joinProjectRoom(projectId: string): void {
   const s = getSocket();
   if (s.connected) {

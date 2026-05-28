@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -361,12 +361,49 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                received_at TEXT NOT NULL
+            )
+            """
+        )
+
         await _ensure_columns(db, "projects", PROJECT_COLUMN_DEFS)
         await _ensure_columns(db, "github_issues", {
             "build_status": "TEXT",
+            "implementing_started_at": "TEXT",
         })
         await db.commit()
         logger.info("Database initialized: %s", db_path)
+
+        # Garbage-collect webhook delivery records older than 24h
+        await db.execute(
+            "DELETE FROM webhook_deliveries WHERE received_at < ?",
+            ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),),
+        )
+        await db.commit()
+
+        # Sweep any stale "implementing" issues that got orphaned by an orchestrator
+        # crash / restart. >30 min in `implementing` is the threshold — real Aider runs
+        # take at most a few minutes; anything older is dead.
+        sweep_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        cur = await db.execute(
+            """
+            UPDATE github_issues
+            SET status = 'open', updated_at = ?
+            WHERE status = 'implementing'
+              AND (implementing_started_at IS NULL OR implementing_started_at < ?)
+            """,
+            (_now(), sweep_cutoff),
+        )
+        await db.commit()
+        if cur.rowcount:
+            logger.warning(
+                "Database init: swept %d stale 'implementing' issue(s) back to 'open'",
+                cur.rowcount,
+            )
 
 
 async def create_project(
@@ -972,6 +1009,28 @@ async def list_github_issues(project_id: str) -> list[dict[str, Any]]:
         return result
 
 
+async def record_webhook_delivery(delivery_id: str) -> bool:
+    """Atomically record a webhook delivery.
+
+    Returns True if this is the first time we've seen `delivery_id` (caller should
+    proceed). Returns False if it was already recorded (caller should skip — GitHub
+    is retrying after a timeout and we've already processed the work).
+    """
+    if not delivery_id:
+        return True  # nothing to dedupe by; caller must process
+    await _ensure_db_ready()
+    async with aiosqlite.connect(_db_path) as db:
+        try:
+            await db.execute(
+                "INSERT INTO webhook_deliveries (delivery_id, received_at) VALUES (?, ?)",
+                (delivery_id, _now()),
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+
 async def find_github_issue_by_repo(
     owner: str, repo_name: str, issue_number: int
 ) -> dict[str, Any] | None:
@@ -1000,10 +1059,19 @@ async def update_github_issue_status(
 ) -> None:
     await _ensure_db_ready()
     async with aiosqlite.connect(_db_path) as db:
-        await db.execute(
-            "UPDATE github_issues SET status = ?, updated_at = ? WHERE project_id = ? AND issue_number = ?",
-            (status, _now(), project_id, issue_number),
-        )
+        if status == "implementing":
+            # Stamp when we entered this state so the startup sweeper can recognise stale rows
+            await db.execute(
+                "UPDATE github_issues SET status = ?, updated_at = ?, implementing_started_at = ? "
+                "WHERE project_id = ? AND issue_number = ?",
+                (status, _now(), _now(), project_id, issue_number),
+            )
+        else:
+            await db.execute(
+                "UPDATE github_issues SET status = ?, updated_at = ?, implementing_started_at = NULL "
+                "WHERE project_id = ? AND issue_number = ?",
+                (status, _now(), project_id, issue_number),
+            )
         await db.commit()
 
 

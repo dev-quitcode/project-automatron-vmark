@@ -8,6 +8,7 @@ import {
   getSocket,
   joinProjectRoom,
   leaveProjectRoom,
+  resetSocket,
 } from "@/lib/socket";
 import { useProjectStore } from "@/stores/projectStore";
 import type {
@@ -36,6 +37,9 @@ export function useWebSocket(projectId?: string) {
     updateIssue,
     setBuildFailure,
     setBuildPassed,
+    fetchChatHistory,
+    fetchLogs,
+    fetchPlan,
   } = useProjectStore();
 
   useEffect(() => {
@@ -45,9 +49,13 @@ export function useWebSocket(projectId?: string) {
       setConnected(true);
       if (projectId) {
         joinProjectRoom(projectId);
-        // Refetch issues so a stale tab catches up on status changes that
-        // happened while the socket was disconnected.
+        // Refetch everything WebSocket events would have delivered while
+        // disconnected — issues, chat, activity log, plan. Fire-and-forget;
+        // store actions handle their own errors.
         api.getIssues(projectId).then(setIssues).catch(() => {});
+        void fetchChatHistory(projectId);
+        void fetchLogs(projectId);
+        void fetchPlan(projectId);
       }
     });
 
@@ -216,7 +224,9 @@ export function useWebSocket(projectId?: string) {
       socket.off("build:failed");
       socket.off("build:passed");
       socket.off("aider:needs_help");
-      disconnectSocket();
+      // Fully reset so the next mount (or projectId change) gets a fresh
+      // socket without stale handlers or room subscriptions.
+      resetSocket();
     };
   }, [
     addBuilderLog,
@@ -231,6 +241,9 @@ export function useWebSocket(projectId?: string) {
     updateIssue,
     setBuildFailure,
     setBuildPassed,
+    fetchChatHistory,
+    fetchLogs,
+    fetchPlan,
   ]);
 
   useEffect(() => {
