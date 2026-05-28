@@ -31,11 +31,19 @@ services:
       - "traefik.http.routers.automatron-http.rule=Host(`automatron.quitcode.com`)"
       - "traefik.http.routers.automatron-http.entrypoints=web"
       - "traefik.http.routers.automatron-http.middlewares=automatron-redirect"
+      # Catch-all web-ui router (lowest priority — orchestrator's /api rule wins for /api/*)
       - "traefik.http.routers.automatron.rule=Host(`automatron.quitcode.com`)"
       - "traefik.http.routers.automatron.entrypoints=websecure"
       - "traefik.http.routers.automatron.tls.certresolver=le"
       - "traefik.http.routers.automatron.priority=1"
       - "traefik.http.services.automatron.loadbalancer.server.port=3000"
+      # Auth.js routes live in Next.js (web-ui), not FastAPI — must override the
+      # orchestrator's PathPrefix(`/api`) rule. Higher priority than automatron-api (10).
+      - "traefik.http.routers.automatron-auth.rule=Host(`automatron.quitcode.com`) && PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.automatron-auth.entrypoints=websecure"
+      - "traefik.http.routers.automatron-auth.tls.certresolver=le"
+      - "traefik.http.routers.automatron-auth.priority=20"
+      - "traefik.http.routers.automatron-auth.service=automatron"
       - "traefik.http.middlewares.automatron-redirect.redirectscheme.scheme=https"
 
   nginx:
