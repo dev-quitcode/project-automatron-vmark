@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -915,8 +916,15 @@ class GitHubOrchestrator:
             elif src.startswith("~/"):
                 base = "src/" + src[2:]
             elif src.startswith(("./", "../")) and from_file:
-                from pathlib import PurePosixPath
-                base = str((PurePosixPath(from_file).parent / src).resolve()).lstrip("/")
+                # posixpath.normpath handles ./ and ../ without touching the
+                # filesystem. PurePosixPath has no .resolve() (that's only on
+                # the concrete Path class) — using it raises AttributeError.
+                import posixpath
+                from_dir = posixpath.dirname(from_file)
+                base = posixpath.normpath(posixpath.join(from_dir, src)).lstrip("/")
+                # Block paths that escape the repo root (e.g. ../../etc/passwd)
+                if base.startswith("../") or base == "..":
+                    return []
             else:
                 return []
             # Try common extensions / index files
@@ -1032,12 +1040,21 @@ class GitHubOrchestrator:
             user_msg += f"\n\n---\n\n{skill_context}"
 
         try:
-            review_text = await call_llm(
-                [SystemMessage(content=system_prompt), HumanMessage(content=user_msg)],
-                model=model,
-                max_tokens=2048,
-                trace_context={**self._trace_ctx, "actor": "reviewer"},
+            # Hard timeout so a hung LLM provider can't lock the issue in
+            # "reviewing" forever. 3 minutes is generous for a 2k-output review.
+            review_text = await asyncio.wait_for(
+                call_llm(
+                    [SystemMessage(content=system_prompt), HumanMessage(content=user_msg)],
+                    model=model,
+                    max_tokens=2048,
+                    trace_context={**self._trace_ctx, "actor": "reviewer"},
+                ),
+                timeout=180,
             )
+        except asyncio.TimeoutError:
+            await self._log(f"PR #{pr_number} review timed out", "LLM call exceeded 180s", "ERROR")
+            await emit_error(self.project_id, f"PR review timed out after 3 min for PR #{pr_number}")
+            return
         except Exception as exc:
             await emit_error(self.project_id, f"PR review failed: {exc}")
             return
