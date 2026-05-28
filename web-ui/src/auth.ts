@@ -21,7 +21,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // Use JWE (default) so the FastAPI orchestrator can decrypt the same cookie
   // using AUTH_SECRET via HKDF-SHA256. See orchestrator/orchestrator/auth.py.
   session: { strategy: "jwt" },
-  providers: [Google],
+  providers: [
+    Google({
+      // Pass explicitly — Auth.js v5 looks for AUTH_GOOGLE_ID by default,
+      // we expose them under the more conventional GOOGLE_CLIENT_* names.
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    }),
+  ],
   callbacks: {
     signIn({ profile }) {
       return emailAllowed(profile?.email ?? "");
