@@ -33,11 +33,6 @@ _COOKIE_NAMES = (
 )
 
 
-def _hkdf_salt(cookie_name: str) -> bytes:
-    """Auth.js derives the salt from the cookie name itself, so __Secure- prefix matters."""
-    return f"Auth.js Generated Encryption Key ({cookie_name})".encode()
-
-
 def _hkdf_sha256(secret: bytes, salt: bytes, info: bytes, length: int = 64) -> bytes:
     """RFC 5869 HKDF-Extract + HKDF-Expand with SHA-256, returning `length` bytes.
 
@@ -60,7 +55,14 @@ def _hkdf_sha256(secret: bytes, salt: bytes, info: bytes, length: int = 64) -> b
 
 
 def _derive_key(secret: str, cookie_name: str) -> bytes:
-    return _hkdf_sha256(secret.encode(), _hkdf_salt(cookie_name), b"", length=64)
+    """Match Auth.js v5's getDerivedEncryptionKey: HKDF-SHA256 with
+        salt = cookie_name
+        info = f"Auth.js Generated Encryption Key ({cookie_name})"
+    See packages/core/src/jwt.ts in next-auth.
+    """
+    salt = cookie_name.encode()
+    info = f"Auth.js Generated Encryption Key ({cookie_name})".encode()
+    return _hkdf_sha256(secret.encode(), salt, info, length=64)
 
 
 def decode_authjs_jwt(token: str, cookie_name: str) -> dict[str, Any] | None:
