@@ -349,10 +349,15 @@ async def _enforce_aider_deletions(repo_dir: Path, default_branch: str) -> int:
     if rc != 0 or not log_out.strip():
         return 0
 
-    # Match: verb (delete/remove/drop/unlink/rm) followed by a backtick-quoted path,
-    # OR a path-like token (must contain `/` or `.`) to reduce false positives.
+    # Match: verb (delete/remove/drop/unlink/rm/move/rename/relocate/migrate) followed
+    # by a backtick-quoted path, or a path-like token (must contain `/` or `.`) to
+    # reduce false positives. The move/rename verbs are critical — Aider regularly
+    # claims to MOVE a file (which should equal `git mv` = delete-old + create-new)
+    # but only performs the create-new half.
     intent_re = re.compile(
-        r"\b(?:delete[ds]?|remove[ds]?|drop[ped]?|unlink|rm)\b[^\n]{0,80}?"
+        r"\b(?:delete[ds]?|remove[ds]?|drop[ped]?|unlink|rm"
+        r"|move[ds]?|moved|rename[ds]?|renamed|relocate[ds]?|relocated|migrate[ds]?|migrated)"
+        r"\b[^\n]{0,80}?"
         r"(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|([\w][\w./\- ]*[\w]))",
         re.IGNORECASE,
     )
@@ -395,6 +400,105 @@ async def _enforce_aider_deletions(repo_dir: Path, default_branch: str) -> int:
         len(paths_list), paths_list,
     )
     return len(paths_list)
+
+
+def _nextjs_route_url(rel_path: str) -> str | None:
+    """Compute the URL a Next.js App Router file resolves to, stripping (group) segments.
+
+    Returns None when the file isn't an App Router routing file. Matches Next.js's
+    actual rule: parens-wrapped directory segments are organisational only and do
+    not appear in the URL.
+    """
+    # Normalise to forward slashes
+    p = rel_path.replace("\\", "/")
+    # Strip leading `src/app/` or `app/` — everything before the route segments
+    for prefix in ("src/app/", "app/"):
+        if p.startswith(prefix):
+            p = p[len(prefix):]
+            break
+    else:
+        return None
+
+    parts = p.split("/")
+    leaf = parts[-1]
+    if leaf not in _NEXTJS_ROUTE_FILES:
+        return None
+    # `layout.tsx` / `loading.tsx` / `error.tsx` etc. don't define a route URL by
+    # themselves — only page.* and route.* do.
+    if not (leaf.startswith("page.") or leaf.startswith("route.")):
+        return None
+
+    # Build URL from the directory segments, dropping (group) parens
+    segments = [s for s in parts[:-1] if not (s.startswith("(") and s.endswith(")"))]
+    return "/" + "/".join(segments) if segments else "/"
+
+
+async def _resolve_route_collisions(repo_dir: Path, default_branch: str) -> int:
+    """Detect Next.js routes whose URL is claimed by more than one page/route file
+    and delete the loser. Common after Aider tries to "move" a page into a route
+    group but doesn't delete the original — both files resolve to the same URL and
+    `next build` fails with a parallel-pages error.
+
+    Resolution priority (keep, discard rest):
+      1. File whose path contains a `(group)` segment (more intentional placement)
+      2. If still tied, alphabetically smallest path (deterministic)
+      3. Otherwise, the file with the shortest path
+    Returns the number of files deleted.
+    """
+    app_root = None
+    for candidate in (repo_dir / "src" / "app", repo_dir / "app"):
+        if candidate.is_dir():
+            app_root = candidate
+            break
+    if app_root is None:
+        return 0
+
+    by_url: dict[str, list[str]] = {}
+    for f in app_root.rglob("*"):
+        if not f.is_file():
+            continue
+        rel = str(f.relative_to(repo_dir))
+        url = _nextjs_route_url(rel)
+        if url is None:
+            continue
+        by_url.setdefault(url, []).append(rel)
+
+    deleted = 0
+    for url, files in by_url.items():
+        if len(files) < 2:
+            continue
+        # Sort so the preferred keep is at index 0
+        def _keep_key(path: str) -> tuple[int, int, str]:
+            in_group = 0 if "(" in path and ")" in path else 1
+            return (in_group, len(path), path)
+        files.sort(key=_keep_key)
+        keep, losers = files[0], files[1:]
+        logger.warning(
+            "Route collision at %s: keeping %s, deleting %s",
+            url, keep, losers,
+        )
+        # Also clean up sibling artefacts living next to the loser page (e.g. the
+        # matching actions.ts / loading.tsx) so we don't leak orphans.
+        extras: list[str] = []
+        for loser in losers:
+            loser_dir = (repo_dir / loser).parent
+            for sibling in loser_dir.iterdir():
+                if sibling.is_file() and str(sibling.relative_to(repo_dir)) != loser:
+                    extras.append(str(sibling.relative_to(repo_dir)))
+        to_delete = losers + extras
+        rc, out = await _run(["git", "rm", "-f", "--", *to_delete], cwd=repo_dir)
+        if rc != 0:
+            logger.warning("Route-collision cleanup: git rm failed for %s: %s", url, out[-200:])
+            continue
+        deleted += len(to_delete)
+
+    if deleted:
+        await _run(
+            ["git", "commit", "-m",
+             f"chore: resolve {deleted} Next.js route collision file(s)"],
+            cwd=repo_dir,
+        )
+    return deleted
 
 
 async def _fix_duplicated_paths(repo_dir: Path, default_branch: str) -> int:
@@ -785,6 +889,13 @@ async def _implement_issue_locked(
     enforced = await _enforce_aider_deletions(repo_dir, default_branch)
     if enforced:
         logger.info("Aider: enforced %d deletion(s) for issue #%d", enforced, issue_number)
+
+    # Detect & resolve Next.js route collisions (two page.tsx → /same-url → build fail).
+    # Run AFTER enforcement so any deletions Aider claimed but didn't perform are
+    # gone first — collisions remaining at this point are the structural ones.
+    collisions = await _resolve_route_collisions(repo_dir, default_branch)
+    if collisions:
+        logger.info("Aider: resolved %d Next.js route collision file(s) for issue #%d", collisions, issue_number)
 
     # Fill any files that Aider missed due to output-token limit (whole-mode truncation).
     # Two sources of "missing": (a) files declared in the issue body's file_paths, and
