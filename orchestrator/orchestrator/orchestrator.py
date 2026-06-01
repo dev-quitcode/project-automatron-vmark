@@ -1007,6 +1007,20 @@ class GitHubOrchestrator:
             "flag it under Issues. The same equivalence applies to sibling files like `actions.ts`, "
             "`loading.tsx`, `error.tsx` that live next to the page. Exception: if BOTH copies exist "
             "on disk simultaneously, that's a duplicate-route build error — flag THAT.\n\n"
+            "## What counts as an Issue\n"
+            "The Issues section is ONLY for things you have CONFIRMED are broken — real bugs, "
+            "signature mismatches, missing required files, failed acceptance criteria, type errors "
+            "you can verify from the imported signatures.\n"
+            "Do NOT put under Issues:\n"
+            "- **Verifications that passed.** If an import is valid, a signature matches, a "
+            "criterion is met — put it under \"What was done well\" or omit it. A bullet that ends "
+            "in ✓ or contains \"this is correct / valid / matches / satisfies\" does NOT belong in Issues.\n"
+            "- **Speculative concerns** (\"may complain\", \"could fail\", \"potentially\", "
+            "\"depending on version\", \"if X is not typed as Y…\"). Either verify the concern using "
+            "the imported signatures and stack files OR omit it. Unverified hedged concerns are noise.\n"
+            "- **Additive code that doesn't break anything** (extra test cases, extra exports the "
+            "spec didn't ask for). Note them under \"What was done well\" if worth mentioning.\n"
+            "- **Stylistic preferences** unless they violate stated implementation_notes.\n\n"
             "## Pass/fail rules — strict\n"
             "- Output **PASSED** ONLY if every acceptance criterion is met AND there are no correctness "
             "issues to list under the Issues section.\n"
@@ -1069,28 +1083,57 @@ class GitHubOrchestrator:
 
         passed = review_text.strip().upper().startswith("PASSED")
 
-        # Safety net: model sometimes writes "PASSED" then lists real issues anyway.
-        # If we see an "Issues" section with substantive bullet points, override to fail.
-        if passed:
-            issues_section = re.search(
-                r'(?:^|\n)\s*(?:##\s*|[*]+\s*)?(?:Issues|Issues found|Problems|Concerns)[:\s]*\n((?:.|\n)*?)(?=\n\s*(?:##|[*]+\s*(?:Strengths|What was done well|Praise))|$)',
-                review_text,
+        # Safety net works both directions:
+        # (a) Model wrote PASSED but listed real issues → override to ISSUES FOUND.
+        # (b) Model wrote ISSUES FOUND but every bullet is a ✓-confirmed verification
+        #     or a hedged speculative concern → override to PASSED.
+        # Compute the substantive-issue count once and decide.
+        issues_section = re.search(
+            r'(?:^|\n)\s*(?:##\s*|[*]+\s*)?(?:Issues|Issues found|Problems|Concerns)[:\s]*\n((?:.|\n)*?)(?=\n\s*(?:##|[*]+\s*(?:Strengths|What was done well|Praise))|$)',
+            review_text,
+            re.IGNORECASE,
+        )
+        substantive: list[str] = []
+        if issues_section:
+            bullets = re.findall(r'^\s*[-*]\s+(.+)$', issues_section.group(1), re.MULTILINE)
+            # Patterns that mark a bullet as a ✓-confirmed verification, not an issue
+            _confirm_pat = re.compile(
+                r'(?:[✓✔☑]|\bthis is correct\b|\bis valid\b|\bmatches the spec\b|'
+                r'\bsatisfies the criterion\b|\bis correctly\b|\bcorrectly handles\b|'
+                r'\bcorrectly implements\b|\bare correctly defined\b|\bmatch the spec\b|'
+                r'\bis present\b|\bis fine\b|\bok here\b|\bnot a missing criterion\b)',
                 re.IGNORECASE,
             )
-            if issues_section:
-                bullets = re.findall(r'^\s*[-*]\s+(.+)$', issues_section.group(1), re.MULTILINE)
-                # Filter out trivially-empty or "no issues"-style bullets
-                substantive = [
-                    b for b in bullets
-                    if len(b.strip()) > 25
-                    and not re.match(r'^\s*(none|n/a|no issues|nothing|—)\s*$', b.strip(), re.IGNORECASE)
-                ]
-                if substantive:
-                    logger.warning(
-                        "PR review: model wrote PASSED but listed %d substantive issue(s) — overriding to ISSUES FOUND",
-                        len(substantive),
-                    )
-                    passed = False
+            # Hedged speculation patterns — concerns the model didn't verify
+            _speculative_pat = re.compile(
+                r'\b(?:may complain|could fail|potentially|depending on (?:the )?(?:next\.?js )?version|'
+                r'if .+ is not typed|might cause|may produce|may fail|likely to|could be a)\b',
+                re.IGNORECASE,
+            )
+            for b in bullets:
+                bs = b.strip()
+                if len(bs) <= 25:
+                    continue
+                if re.match(r'^\s*(none|n/a|no issues|nothing|—)\s*$', bs, re.IGNORECASE):
+                    continue
+                if _confirm_pat.search(bs):
+                    continue
+                if _speculative_pat.search(bs):
+                    continue
+                substantive.append(bs)
+
+        if passed and substantive:
+            logger.warning(
+                "PR review: model wrote PASSED but listed %d substantive issue(s) — overriding to ISSUES FOUND",
+                len(substantive),
+            )
+            passed = False
+        elif not passed and not substantive:
+            logger.warning(
+                "PR review: model wrote ISSUES FOUND but every bullet was ✓-confirmed or speculative "
+                "— overriding to PASSED",
+            )
+            passed = True
 
         await self._log(
             f"PR #{pr_number} review: {'PASSED' if passed else 'ISSUES FOUND'}",
