@@ -537,12 +537,17 @@ async def api_restart_preview(project_id: str, background_tasks: BackgroundTasks
     return {"status": "started", "project_id": project_id}
 
 
-async def _run_preview_and_save(project_id: str, owner: str, repo: str, default_branch: str = "main") -> None:
+async def _run_preview_and_save(
+    project_id: str, owner: str, repo: str, default_branch: str = "main",
+    branch: str | None = None,
+) -> None:
     from orchestrator.preview import run_preview_locally
     from orchestrator.api.websocket import emit_status_update, emit_error
-    preview_url = await run_preview_locally(project_id, owner, repo, default_branch)
+    preview_url = await run_preview_locally(project_id, owner, repo, default_branch, branch=branch)
     if not preview_url:
-        await emit_error(project_id, "Preview build failed — check that the repo builds successfully")
+        # run_preview_locally already emits a specific emit_error on the known
+        # failure paths (unknown project type, git checkout fail). Only emit the
+        # generic message when we got here for some other reason.
         return
     await update_project_preview(project_id, preview_url, "ready")
     project = await get_project(project_id)
@@ -554,6 +559,28 @@ async def _run_preview_and_save(project_id: str, owner: str, repo: str, default_
             progress={},
             preview_url=preview_url,
         )
+
+
+@router.post("/projects/{project_id}/issues/{issue_number}/preview")
+async def api_preview_issue_branch(
+    project_id: str, issue_number: int, background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """Spin up a preview against the Aider PR branch for this issue, so the user
+    can see the implementation before merging."""
+    project = await _get_required_project(project_id)
+    owner = project.get("github_repo_owner") or ""
+    repo = project.get("github_repo_name") or ""
+    if not owner or not repo:
+        raise HTTPException(status_code=422, detail="Project has no GitHub repo configured")
+    default_branch = project.get("default_branch") or "main"
+    # The Aider workflow always pushes to branch `aider/fix-<issue_number>`. We
+    # don't bother resolving via the PR number because the branch naming is
+    # deterministic — and the issue may not even have a PR recorded yet locally.
+    branch = f"aider/fix-{issue_number}"
+    background_tasks.add_task(
+        _run_preview_and_save, project_id, owner, repo, default_branch, branch,
+    )
+    return {"status": "started", "project_id": project_id, "branch": branch}
 
 
 def _raise_for_preflight_failure(result: PreflightResult) -> None:

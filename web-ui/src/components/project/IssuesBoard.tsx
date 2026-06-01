@@ -18,11 +18,13 @@ interface IssuesBoardProps {
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
   onImplementAider: (issueNumber: number) => void;
+  onPreviewBranch: (issueNumber: number) => void;
   onCreateIssue: (prompt: string) => void;
   onBuildCheck: () => void;
   reviewingIssues: Set<number>;
   assigningIssues: Set<number>;
   implementingIssues: Set<number>;
+  previewingIssues: Set<number>;
   isSyncing: boolean;
   isAuditing: boolean;
   isCreatingIssue: boolean;
@@ -36,7 +38,8 @@ interface IssuesBoardProps {
 
 export function IssuesBoard({
   issues, repoUrl, previewUrl, onSync, onAudit, onStartPreview, onReview, onAssignCopilot,
-  onImplementAider, onCreateIssue, onBuildCheck, reviewingIssues, assigningIssues, implementingIssues,
+  onImplementAider, onPreviewBranch, onCreateIssue, onBuildCheck,
+  reviewingIssues, assigningIssues, implementingIssues, previewingIssues,
   isSyncing, isAuditing, isCreatingIssue, isCheckingBuild,
   buildFailure, onCreateBuildIssue, onDismissBuildFailure,
   buildPassed, onDismissBuildPassed,
@@ -344,9 +347,11 @@ export function IssuesBoard({
                       onReview={onReview}
                       onAssignCopilot={onAssignCopilot}
                       onImplementAider={onImplementAider}
+                      onPreviewBranch={onPreviewBranch}
                       isReviewing={reviewingIssues.has(issue.issue_number)}
                       isAssigning={assigningIssues.has(issue.issue_number)}
                       isImplementing={implementingIssues.has(issue.issue_number)}
+                      isPreviewing={previewingIssues.has(issue.issue_number)}
                     />
                   ))}
                 </div>

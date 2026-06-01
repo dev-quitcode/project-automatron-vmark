@@ -168,6 +168,18 @@ async def run_project_build_check(
         await emit_error(project_id, f"Build check: git failed — {safe_out[-200:]}")
         return
 
+    # Distinguish SKIPPED (no build script — nothing to do) from PASSED (actually built).
+    # Without this the activity log says "PASSED" for repos that have no package.json,
+    # which is misleading and hid the fact that the user's project was unbuildable.
+    if _detect_build_command(repo_dir) is None:
+        await save_activity_log(
+            project_id, seq, "Build check: SKIPPED",
+            "No build script detected on this branch (no package.json with a `build` script)",
+            "INFO",
+        )
+        logger.info("Build check (project): SKIPPED for %s/%s — no build script", owner, repo)
+        return
+
     logger.info("Build check (project): running npm run build for %s/%s", owner, repo)
     passed, detail = await run_build_in_docker(repo_dir)
 

@@ -5,7 +5,7 @@ import type { GithubIssue, IssueStatus } from "@/lib/types";
 import {
   ExternalLink, GitPullRequest, CheckCircle2, Circle,
   GitMerge, Loader2, ChevronDown, ChevronUp, XCircle,
-  Zap, Eye, ThumbsUp, Bot, Hammer,
+  Zap, Eye, ThumbsUp, Bot, Hammer, Monitor,
 } from "lucide-react";
 
 interface IssueCardProps {
@@ -13,9 +13,11 @@ interface IssueCardProps {
   onReview: (issueNumber: number, prNumber: number) => void;
   onAssignCopilot: (issueNumber: number) => void;
   onImplementAider: (issueNumber: number) => void;
+  onPreviewBranch?: (issueNumber: number) => void;
   isReviewing: boolean;
   isAssigning: boolean;
   isImplementing: boolean;
+  isPreviewing?: boolean;
 }
 
 type VisualState =
@@ -61,7 +63,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, isReviewing, isAssigning, isImplementing }: IssueCardProps) {
+export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, onPreviewBranch, isReviewing, isAssigning, isImplementing, isPreviewing }: IssueCardProps) {
   const [reviewExpanded, setReviewExpanded] = useState(false);
   const vs = toVisualState(issue);
   const meta = STATE_META[vs];
@@ -175,6 +177,17 @@ export function IssueCard({ issue, onReview, onAssignCopilot, onImplementAider, 
                 className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/5 px-2 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/10 transition-colors disabled:opacity-50">
                 {isImplementing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
                 {isImplementing ? "Working…" : "Re-implement"}
+              </button>
+            )}
+
+            {/* Preview this branch — available any time there's an Aider PR (open or reviewed),
+                lets you see the in-flight implementation without merging it to main. */}
+            {onPreviewBranch && (vs === "pr_open" || vs === "pr_reviewed_fail" || vs === "pr_reviewed_pass") && (
+              <button onClick={() => onPreviewBranch(issue.issue_number)} disabled={isPreviewing}
+                title="Spin up a preview from this PR's branch"
+                className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/5 px-2 py-1 text-xs font-medium text-cyan-400 hover:bg-cyan-500/10 transition-colors disabled:opacity-50">
+                {isPreviewing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Monitor className="h-3 w-3" />}
+                {isPreviewing ? "Building…" : "Preview branch"}
               </button>
             )}
 

@@ -141,6 +141,15 @@ export async function restartProjectPreview(projectId: string): Promise<Project>
   });
 }
 
+export async function previewIssueBranch(
+  projectId: string,
+  issueNumber: number,
+): Promise<{ status: string; branch: string }> {
+  return request(`/api/projects/${projectId}/issues/${issueNumber}/preview`, {
+    method: "POST",
+  });
+}
+
 export async function getProjectPlan(
   projectId: string
 ): Promise<{ plan_md: string | null }> {

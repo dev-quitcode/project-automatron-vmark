@@ -134,13 +134,22 @@ def _detect_internal_port(repo_dir: Path) -> int:
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 async def run_preview_locally(
-    project_id: str, owner: str, repo: str, default_branch: str = "main"
+    project_id: str, owner: str, repo: str, default_branch: str = "main",
+    branch: str | None = None,
 ) -> str | None:
-    """Clone the repo, build, and run it in Docker. Returns the preview URL or None."""
+    """Clone the repo, build, and run it in Docker. Returns the preview URL or None.
+
+    If `branch` is provided, that branch is checked out instead of `default_branch`.
+    This lets the user preview an in-flight Aider PR branch (e.g. `aider/fix-43`)
+    before merging, which is the only way to preview anything when `main` is still
+    a planning scaffold without a `package.json`.
+    """
     workspace = settings.workspace_base_dir / str(project_id)
     workspace.mkdir(parents=True, exist_ok=True)
     # Use a separate directory from the aider workspace to avoid branch conflicts
     repo_dir = workspace / "preview-repo"
+
+    target_branch = branch or default_branch
 
     token = settings.github_token
     clone_url = (
@@ -150,24 +159,35 @@ async def run_preview_locally(
     )
 
     if (repo_dir / ".git").exists():
-        logger.info("Preview: syncing %s/%s to %s", owner, repo, default_branch)
+        logger.info("Preview: syncing %s/%s to %s", owner, repo, target_branch)
         _run(["git", "remote", "set-url", "origin", clone_url], cwd=repo_dir)
-        _run(["git", "fetch", "origin"], cwd=repo_dir)
-        _run(["git", "checkout", default_branch], cwd=repo_dir)
-        rc, out = _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=repo_dir)
+        _run(["git", "fetch", "origin", target_branch], cwd=repo_dir)
+        _run(["git", "checkout", "-B", target_branch, f"origin/{target_branch}"], cwd=repo_dir)
+        rc, out = _run(["git", "reset", "--hard", f"origin/{target_branch}"], cwd=repo_dir)
     else:
-        logger.info("Preview: cloning %s/%s", owner, repo)
-        rc, out = _run(["git", "clone", clone_url, str(repo_dir)])
+        logger.info("Preview: cloning %s/%s @ %s", owner, repo, target_branch)
+        rc, out = _run(["git", "clone", "--branch", target_branch, clone_url, str(repo_dir)])
 
     if rc != 0:
         logger.error("Preview: git failed:\n%s", out)
+        from orchestrator.api.websocket import emit_error
+        await emit_error(
+            project_id,
+            f"Preview: could not check out branch `{target_branch}` — {out[-200:].strip()}",
+        )
         return None
 
     project_type = _detect_project_type(repo_dir)
-    logger.info("Preview: detected project type=%s for %s/%s", project_type, owner, repo)
+    logger.info("Preview: detected project type=%s for %s/%s @ %s", project_type, owner, repo, target_branch)
 
     if project_type == "unknown":
-        logger.warning("Preview: unrecognised project type for %s/%s", owner, repo)
+        logger.warning("Preview: unrecognised project type for %s/%s @ %s", owner, repo, target_branch)
+        from orchestrator.api.websocket import emit_error
+        await emit_error(
+            project_id,
+            f"Preview cannot start: no package.json on branch `{target_branch}` yet. "
+            "Pick a branch that contains the project init (or merge the init PR).",
+        )
         return None
 
     _ensure_dockerfile(repo_dir, project_type)

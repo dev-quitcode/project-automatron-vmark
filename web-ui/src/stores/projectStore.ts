@@ -72,6 +72,7 @@ interface ProjectState {
   updatePlan: (projectId: string, planMd: string) => Promise<void>;
   updateProjectLlmConfig: (projectId: string, llmConfig: ProjectLlmConfig) => Promise<void>;
   restartPreview: (id: string) => Promise<void>;
+  previewIssueBranch: (id: string, issueNumber: number) => Promise<void>;
   updateDeployTarget: (
     projectId: string,
     target: DeployTargetRequest
@@ -410,6 +411,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         currentProject:
           state.currentProject?.id === project.id ? project : state.currentProject,
       }));
+    } catch (error: any) {
+      set({ error: error.message });
+      throw error;
+    }
+  },
+
+  previewIssueBranch: async (id, issueNumber) => {
+    set({ error: null });
+    try {
+      await api.previewIssueBranch(id, issueNumber);
     } catch (error: any) {
       set({ error: error.message });
       throw error;

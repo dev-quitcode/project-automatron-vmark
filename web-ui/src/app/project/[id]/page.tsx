@@ -69,6 +69,7 @@ export default function ProjectPage() {
   const [reviewingIssues, setReviewingIssues] = useState<Set<number>>(new Set());
   const [assigningIssues, setAssigningIssues] = useState<Set<number>>(new Set());
   const [implementingIssues, setImplementingIssues] = useState<Set<number>>(new Set());
+  const [previewingIssues, setPreviewingIssues] = useState<Set<number>>(new Set());
   const [isCreatingIssue, setIsCreatingIssue] = useState(false);
   const [isCheckingBuild, setIsCheckingBuild] = useState(false);
   const [llmConfig, setLlmConfig] = useState<ProjectLlmConfig>(
@@ -127,6 +128,7 @@ export default function ProjectPage() {
     triggerPRReview,
     assignIssueToCopilot,
     implementWithAider,
+    previewIssueBranch,
     createIssueFromPrompt,
     updateDeployTarget,
     updateProjectLlmConfig,
@@ -283,6 +285,23 @@ export default function ProjectPage() {
         next.delete(issueNumber);
         return next;
       });
+    }
+  };
+
+  const handlePreviewBranch = async (issueNumber: number) => {
+    setPreviewingIssues((prev) => new Set(prev).add(issueNumber));
+    try {
+      await previewIssueBranch(projectId, issueNumber);
+    } finally {
+      // Clear after a short window — the orchestrator emits status:update with
+      // the preview_url when the build finishes, but we don't wait synchronously.
+      setTimeout(() => {
+        setPreviewingIssues((prev) => {
+          const next = new Set(prev);
+          next.delete(issueNumber);
+          return next;
+        });
+      }, 60_000);
     }
   };
 
@@ -902,11 +921,13 @@ export default function ProjectPage() {
               onReview={(issueNumber, prNumber) => void handleReviewPR(issueNumber, prNumber)}
               onAssignCopilot={(issueNumber) => void handleAssignCopilot(issueNumber)}
               onImplementAider={(issueNumber) => void handleImplementAider(issueNumber)}
+              onPreviewBranch={(issueNumber) => void handlePreviewBranch(issueNumber)}
               onCreateIssue={(prompt) => void handleCreateIssue(prompt)}
               onBuildCheck={() => void handleBuildCheck()}
               reviewingIssues={reviewingIssues}
               assigningIssues={assigningIssues}
               implementingIssues={implementingIssues}
+              previewingIssues={previewingIssues}
               isSyncing={isSyncingIssues}
               isAuditing={isAuditing}
               isCreatingIssue={isCreatingIssue}
