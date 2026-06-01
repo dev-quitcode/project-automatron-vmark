@@ -1088,11 +1088,18 @@ class GitHubOrchestrator:
         # (b) Model wrote ISSUES FOUND but every bullet is a ✓-confirmed verification
         #     or a hedged speculative concern → override to PASSED.
         # Compute the substantive-issue count once and decide.
+        #
+        # The outer regex REQUIRES a real markdown heading prefix (`## ` or `**`).
+        # Without that requirement, the regex falsely anchors on the verdict line
+        # `ISSUES FOUND` (case-insensitive `Issues found`) and captures the summary
+        # paragraph, finds zero bullets, and the (b) branch wrongly flips to PASSED.
+        # `Issues found` is also dropped from the alternatives — it's the verdict, not a heading.
         issues_section = re.search(
-            r'(?:^|\n)\s*(?:##\s*|[*]+\s*)?(?:Issues|Issues found|Problems|Concerns)[:\s]*\n((?:.|\n)*?)(?=\n\s*(?:##|[*]+\s*(?:Strengths|What was done well|Praise))|$)',
+            r'(?:^|\n)(?:##\s+|\*\*\s*)(?:Issues|Problems|Concerns)\b\*?\*?[:\s]*\n((?:.|\n)*?)(?=\n\s*(?:##|\*\*(?:Strengths|What was done well|Praise))|$)',
             review_text,
             re.IGNORECASE,
         )
+        bullets: list[str] = []
         substantive: list[str] = []
         if issues_section:
             bullets = re.findall(r'^\s*[-*]\s+(.+)$', issues_section.group(1), re.MULTILINE)
@@ -1128,10 +1135,14 @@ class GitHubOrchestrator:
                 len(substantive),
             )
             passed = False
-        elif not passed and not substantive:
+        elif not passed and issues_section is not None and bullets and not substantive:
+            # Guard: only flip ISSUES FOUND → PASSED when we actually parsed a real
+            # Issues section with bullets that ALL got filtered. Empty section or
+            # missing section → trust the model's verdict.
             logger.warning(
-                "PR review: model wrote ISSUES FOUND but every bullet was ✓-confirmed or speculative "
-                "— overriding to PASSED",
+                "PR review: model wrote ISSUES FOUND but all %d bullet(s) were ✓-confirmed or "
+                "speculative — overriding to PASSED",
+                len(bullets),
             )
             passed = True
 
